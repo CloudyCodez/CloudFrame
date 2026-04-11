@@ -971,6 +971,8 @@ internal sealed class PresentMonFpsService : IDisposable
         var candidates = new[]
         {
             Path.Combine(AppContext.BaseDirectory, PresentMonExeName),
+            Path.Combine(AppContext.BaseDirectory, "tools", "PresentMon", PresentMonExeName),
+            Path.Combine(AppContext.BaseDirectory, "tools", PresentMonExeName),
             Path.Combine(AppContext.BaseDirectory, "ThirdParty", "PresentMon", PresentMonExeName)
         };
 
