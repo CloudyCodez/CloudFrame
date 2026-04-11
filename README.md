@@ -34,28 +34,6 @@ Published executable:
 
 - `FrameBoost\bin\Release\net10.0-windows\win-x64\publish\CloudFrame.exe`
 
-## GitHub Desktop Setup
-
-1. Open `GitHub Desktop`
-2. Choose `File` -> `Add local repository`
-3. Select this folder: `C:\Users\conno\Documents\Cloud's FrameBoost`
-4. If the repository has not been published yet, use `Publish repository`
-5. After the first publish, pushing `main` and tags will work normally from either GitHub Desktop or git
-
-## Release Workflow
-
-- `.github/workflows/release.yml` builds CloudFrame on every push to `main`
-- tagging a release like `v1.0.0` will also create a GitHub Release with a Windows self-contained zip asset
-- project version metadata is currently set to `1.0.3`
-
-## Public Release Layout
-
-- `dist\CloudFrame\CloudFrame.exe` is the primary launch target
-- `dist\CloudFrame\README.txt` sits beside the app for quick handoff notes
-- `dist\CloudFrame\tools\PresentMon\` contains the FPS helper binary
-- `dist\CloudFrame\symbols\` contains debug symbols
-- `dist\CloudFrame\support\` is reserved for any extra runtime files that a publish may still need
-
 ## Quick Start
 
 1. Launch `CloudFrame.exe`
