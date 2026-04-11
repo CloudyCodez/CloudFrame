@@ -63,6 +63,10 @@ internal sealed class MainForm : Form
     private CheckBox _overlayShowCpuCheckBox = null!;
     private CheckBox _overlayShowGpuCheckBox = null!;
     private Panel   _overlayAccentPreview   = null!;
+    private Panel   _overlayTextPreview     = null!;
+    private Panel   _overlayBackgroundPreview = null!;
+    private ComboBox _overlayFontComboBox   = null!;
+    private ComboBox _themePresetComboBox   = null!;
     private Label _monitoringLabel = null!;
     private Label _sessionLabel = null!;
     private Label _elevationLabel = null!;
@@ -98,6 +102,7 @@ internal sealed class MainForm : Form
     public MainForm()
     {
         _settings = _settingsService.Load();
+        AppTheme.ApplyPreset(_settings.ThemePreset);
         _presentMonFpsService = new PresentMonFpsService(_logger);
         _powerPlanService = new PowerPlanService(_logger);
         _timerResolutionService = new TimerResolutionService(_logger);
@@ -340,11 +345,12 @@ internal sealed class MainForm : Form
             AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
             ColumnCount = 1,
-            RowCount = 7,
+            RowCount = 8,
             Padding = new Padding(12),
             BackColor = AppTheme.Canvas,
             Margin = new Padding(0)
         };
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -455,12 +461,21 @@ internal sealed class MainForm : Form
             Margin       = new Padding(0, 0, 0, 0)
         };
 
-        var metricRow = new FlowLayoutPanel
+        var metricCardRow = new FlowLayoutPanel
         {
             Dock = DockStyle.Top,
             AutoSize = true,
             WrapContents = true,
-            Margin = new Padding(0, 12, 0, 12),
+            Margin = new Padding(0, 12, 0, 8),
+            BackColor = AppTheme.Canvas
+        };
+        var gaugeRow = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            WrapContents = true,
+            Margin = new Padding(0, 0, 0, 12),
             BackColor = AppTheme.Canvas
         };
         _boostStatusCard = new MetricCard();
@@ -468,14 +483,14 @@ internal sealed class MainForm : Form
         _overlayCard = new MetricCard();
         _impactCard = new MetricCard();
         _deltaCard = new MetricCard();
-        metricRow.Controls.Add(_boostStatusCard);
-        metricRow.Controls.Add(_compatibilityCard);
-        metricRow.Controls.Add(_overlayCard);
-        metricRow.Controls.Add(_impactCard);
-        metricRow.Controls.Add(_deltaCard);
-        metricRow.Controls.Add(_cpuRing);
-        metricRow.Controls.Add(_gpuRing);
-        metricRow.Controls.Add(_fpsRing);
+        metricCardRow.Controls.Add(_boostStatusCard);
+        metricCardRow.Controls.Add(_compatibilityCard);
+        metricCardRow.Controls.Add(_overlayCard);
+        metricCardRow.Controls.Add(_impactCard);
+        metricCardRow.Controls.Add(_deltaCard);
+        gaugeRow.Controls.Add(_cpuRing);
+        gaugeRow.Controls.Add(_gpuRing);
+        gaugeRow.Controls.Add(_fpsRing);
 
         var gaugePanel = new CardPanel
         {
@@ -541,9 +556,10 @@ internal sealed class MainForm : Form
             AutoSize      = true,
             AutoSizeMode  = AutoSizeMode.GrowAndShrink,
             WrapContents  = true,
+            FlowDirection = FlowDirection.LeftToRight,
             Dock          = DockStyle.Top,
             Margin        = new Padding(0),
-            Padding       = new Padding(0),
+            Padding       = new Padding(0, 0, 0, 6),
             BackColor     = AppTheme.Surface
         };
 
@@ -806,18 +822,24 @@ internal sealed class MainForm : Form
         logGroup.Controls.Add(_logTextBox);
 
         root.Controls.Add(hero, 0, 0);
-        root.Controls.Add(metricRow, 0, 1);
-        root.Controls.Add(gaugePanel, 0, 2);
-        root.Controls.Add(controlPanel, 0, 3);
-        root.Controls.Add(statusPanel, 0, 4);
-        root.Controls.Add(detectedGroup, 0, 5);
-        root.Controls.Add(logGroup, 0, 6);
+        root.Controls.Add(metricCardRow, 0, 1);
+        root.Controls.Add(gaugeRow, 0, 2);
+        root.Controls.Add(gaugePanel, 0, 3);
+        root.Controls.Add(controlPanel, 0, 4);
+        root.Controls.Add(statusPanel, 0, 5);
+        root.Controls.Add(detectedGroup, 0, 6);
+        root.Controls.Add(logGroup, 0, 7);
 
         void syncDashboardLayout()
         {
             var availableWidth = Math.Max(760, scrollHost.ClientSize.Width - 8);
             root.MaximumSize = new Size(availableWidth, 0);
             root.Width = availableWidth;
+            metricCardRow.MaximumSize = new Size(availableWidth, 0);
+            gaugeRow.MaximumSize = new Size(availableWidth, 0);
+            infoFlow.MaximumSize = new Size(availableWidth, 0);
+            buttonFlow.MaximumSize = new Size(availableWidth, 0);
+            controlToggleFlow.MaximumSize = new Size(Math.Max(380, availableWidth - 56), 0);
 
             var heroTextBudget = availableWidth - heroButtons.Width - (heroMascot?.Width ?? 0) - 140;
             heroSummaryLabel.MaximumSize = new Size(Math.Max(320, heroTextBudget), 0);
@@ -1127,10 +1149,11 @@ internal sealed class MainForm : Form
             AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
             ColumnCount = 1,
-            RowCount = 7,
+            RowCount = 8,
             Padding = new Padding(16),
             BackColor = AppTheme.Canvas
         };
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -1249,19 +1272,20 @@ internal sealed class MainForm : Form
         safetyCard.Controls.Add(safetyLayout);
 
         root.Controls.Add(buttonFlow, 0, 0);
-        root.Controls.Add(BuildOverlaySettingsCard(), 0, 1);
-        root.Controls.Add(BuildSessionDefaultsCard(), 0, 2);
-        root.Controls.Add(BuildBoostTweaksCard(), 0, 3);
-        root.Controls.Add(safetyCard, 0, 4);
-        root.Controls.Add(AppTheme.CreateSectionTitle("Available Power Plans"), 0, 5);
-        root.Controls.Add(_powerPlanList, 0, 6);
+        root.Controls.Add(BuildThemeSettingsCard(), 0, 1);
+        root.Controls.Add(BuildOverlaySettingsCard(), 0, 2);
+        root.Controls.Add(BuildSessionDefaultsCard(), 0, 3);
+        root.Controls.Add(BuildBoostTweaksCard(), 0, 4);
+        root.Controls.Add(safetyCard, 0, 5);
+        root.Controls.Add(AppTheme.CreateSectionTitle("Available Power Plans"), 0, 6);
+        root.Controls.Add(_powerPlanList, 0, 7);
 
         scrollHost.Controls.Add(root);
         tab.Controls.Add(scrollHost);
         return tab;
     }
 
-    private CardPanel BuildOverlaySettingsCard()
+    private CardPanel BuildLegacyOverlaySettingsCard()
     {
         var card = new CardPanel
         {
@@ -1384,6 +1408,351 @@ internal sealed class MainForm : Form
         row.Controls.Add(accentBtn);
 
         layout.Controls.Add(row, 0, 2);
+        card.Controls.Add(layout);
+        return card;
+    }
+
+    private CardPanel BuildOverlaySettingsCard()
+    {
+        var card = new CardPanel
+        {
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            FillColor = AppTheme.Surface,
+            BorderColor = AppTheme.Border,
+            CornerRadius = 18,
+            Margin = new Padding(0, 0, 0, 14),
+            InnerPadding = new Padding(18)
+        };
+
+        var layout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            ColumnCount = 1,
+            RowCount = 6,
+            BackColor = AppTheme.Surface,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink
+        };
+
+        for (var i = 0; i < 6; i++)
+        {
+            layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        }
+
+        layout.Controls.Add(new Label
+        {
+            Text = "Overlay Studio",
+            AutoSize = true,
+            Font = AppTheme.TitleFont(14f),
+            ForeColor = AppTheme.TextPrimary
+        }, 0, 0);
+
+        layout.Controls.Add(new Label
+        {
+            Text = "Tune the live overlay without restarting. Minimal keeps the background fully transparent, while Card mode uses your custom tint.",
+            AutoSize = true,
+            MaximumSize = new Size(920, 0),
+            Font = AppTheme.BodyFont(9.5f),
+            ForeColor = AppTheme.TextSecondary,
+            Margin = new Padding(0, 6, 0, 12)
+        }, 0, 1);
+
+        Panel CreatePreview(Color color)
+        {
+            return new Panel
+            {
+                Width = 22,
+                Height = 22,
+                BackColor = Color.FromArgb(255, color.R, color.G, color.B),
+                BorderStyle = BorderStyle.FixedSingle,
+                Margin = new Padding(0, 6, 6, 4),
+                Cursor = Cursors.Hand
+            };
+        }
+
+        Label CreateInlineLabel(string text)
+        {
+            return new Label
+            {
+                Text = text,
+                AutoSize = true,
+                ForeColor = AppTheme.TextSecondary,
+                Font = AppTheme.CaptionFont(9.5f),
+                Padding = new Padding(0, 8, 6, 0)
+            };
+        }
+
+        FlowLayoutPanel CreateRow(int bottomMargin = 10)
+        {
+            return new FlowLayoutPanel
+            {
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                WrapContents = true,
+                BackColor = AppTheme.Surface,
+                Margin = new Padding(0, 0, 0, bottomMargin)
+            };
+        }
+
+        CheckBox CreateMetricToggle(string text, bool initialValue, Action<bool> apply)
+        {
+            var checkBox = new CheckBox
+            {
+                Text = text,
+                AutoSize = true,
+                Checked = initialValue,
+                ForeColor = AppTheme.TextPrimary,
+                Font = AppTheme.CaptionFont(9.5f),
+                Padding = new Padding(0, 7, 14, 7)
+            };
+            checkBox.CheckedChanged += (_, _) =>
+            {
+                apply(checkBox.Checked);
+                SaveSettings();
+                RecreateOverlay();
+            };
+
+            return checkBox;
+        }
+
+        void PickOverlayColor(string title, Panel preview, Func<Color> getCurrentColor, Action<Color> applyColor, bool preserveAlpha = false)
+        {
+            using var dialog = new ColorDialog
+            {
+                Color = Color.FromArgb(255, getCurrentColor().R, getCurrentColor().G, getCurrentColor().B),
+                FullOpen = true
+            };
+
+            if (dialog.ShowDialog(this) != DialogResult.OK)
+            {
+                return;
+            }
+
+            var current = getCurrentColor();
+            var selected = preserveAlpha
+                ? Color.FromArgb(current.A, dialog.Color.R, dialog.Color.G, dialog.Color.B)
+                : dialog.Color;
+
+            preview.BackColor = Color.FromArgb(255, selected.R, selected.G, selected.B);
+            applyColor(selected);
+            SaveSettings();
+            RecreateOverlay();
+            _logger.Log($"{title} updated.");
+        }
+
+        _overlayStyleComboBox = AppTheme.StyleComboBox(new ComboBox
+        {
+            DropDownStyle = ComboBoxStyle.DropDownList,
+            Width = 118,
+            Margin = new Padding(0, 4, 18, 4)
+        });
+        _overlayStyleComboBox.Items.Add("Card");
+        _overlayStyleComboBox.Items.Add("Minimal");
+        _overlayStyleComboBox.SelectedIndex = _settings.OverlayStyle == OverlayStyle.Minimal ? 1 : 0;
+        _overlayStyleComboBox.SelectedIndexChanged += (_, _) =>
+        {
+            _settings.OverlayStyle = _overlayStyleComboBox.SelectedIndex == 1 ? OverlayStyle.Minimal : OverlayStyle.Card;
+            SaveSettings();
+            RecreateOverlay();
+        };
+
+        _overlayFontComboBox = AppTheme.StyleComboBox(new ComboBox
+        {
+            DropDownStyle = ComboBoxStyle.DropDownList,
+            Width = 162,
+            Margin = new Padding(0, 4, 18, 4)
+        });
+        foreach (var preset in Enum.GetValues<OverlayFontPreset>())
+        {
+            _overlayFontComboBox.Items.Add(preset);
+        }
+
+        var fontIndex = _overlayFontComboBox.Items.IndexOf(_settings.OverlayFontPreset);
+        _overlayFontComboBox.SelectedIndex = fontIndex >= 0 ? fontIndex : 0;
+        _overlayFontComboBox.SelectedIndexChanged += (_, _) =>
+        {
+            if (_overlayFontComboBox.SelectedItem is not OverlayFontPreset preset)
+            {
+                return;
+            }
+
+            _settings.OverlayFontPreset = preset;
+            SaveSettings();
+            RecreateOverlay();
+        };
+
+        _overlayShowFpsCheckBox = CreateMetricToggle("FPS", _settings.OverlayShowFps, value => _settings.OverlayShowFps = value);
+        _overlayShowCpuCheckBox = CreateMetricToggle("CPU", _settings.OverlayShowCpu, value => _settings.OverlayShowCpu = value);
+        _overlayShowGpuCheckBox = CreateMetricToggle("GPU", _settings.OverlayShowGpu, value => _settings.OverlayShowGpu = value);
+
+        _overlayAccentPreview = CreatePreview(Color.FromArgb(_settings.OverlayAccentArgb));
+        _overlayTextPreview = CreatePreview(Color.FromArgb(_settings.OverlayTextArgb));
+        _overlayBackgroundPreview = CreatePreview(Color.FromArgb(_settings.OverlayBackgroundArgb));
+
+        var styleRow = CreateRow();
+        styleRow.Controls.Add(CreateInlineLabel("Style"));
+        styleRow.Controls.Add(_overlayStyleComboBox);
+        styleRow.Controls.Add(CreateInlineLabel("Font"));
+        styleRow.Controls.Add(_overlayFontComboBox);
+
+        var metricsRow = CreateRow();
+        metricsRow.Controls.Add(CreateInlineLabel("Show"));
+        metricsRow.Controls.Add(_overlayShowFpsCheckBox);
+        metricsRow.Controls.Add(_overlayShowCpuCheckBox);
+        metricsRow.Controls.Add(_overlayShowGpuCheckBox);
+
+        var colorsRow = CreateRow(6);
+
+        var accentButton = AppTheme.CreateButton("Accent color", width: 132);
+        accentButton.Margin = new Padding(0, 4, 12, 4);
+        accentButton.Click += (_, _) => PickOverlayColor(
+            "Overlay accent color",
+            _overlayAccentPreview,
+            () => Color.FromArgb(_settings.OverlayAccentArgb),
+            color => _settings.OverlayAccentArgb = color.ToArgb());
+
+        var textButton = AppTheme.CreateButton("Text color", width: 128);
+        textButton.Margin = new Padding(0, 4, 12, 4);
+        textButton.Click += (_, _) => PickOverlayColor(
+            "Overlay text color",
+            _overlayTextPreview,
+            () => Color.FromArgb(_settings.OverlayTextArgb),
+            color => _settings.OverlayTextArgb = color.ToArgb());
+
+        var backgroundButton = AppTheme.CreateButton("Card tint", width: 122);
+        backgroundButton.Margin = new Padding(0, 4, 0, 4);
+        backgroundButton.Click += (_, _) => PickOverlayColor(
+            "Overlay card tint",
+            _overlayBackgroundPreview,
+            () => Color.FromArgb(_settings.OverlayBackgroundArgb),
+            color => _settings.OverlayBackgroundArgb = color.ToArgb(),
+            preserveAlpha: true);
+
+        colorsRow.Controls.Add(_overlayAccentPreview);
+        colorsRow.Controls.Add(accentButton);
+        colorsRow.Controls.Add(_overlayTextPreview);
+        colorsRow.Controls.Add(textButton);
+        colorsRow.Controls.Add(_overlayBackgroundPreview);
+        colorsRow.Controls.Add(backgroundButton);
+
+        var tipLabel = new Label
+        {
+            Text = "Tip: use Card style for a premium HUD panel, or Minimal for a cleaner streamer-style readout. Background tint only shows while Card mode is active.",
+            AutoSize = true,
+            MaximumSize = new Size(920, 0),
+            Font = AppTheme.BodyFont(9f),
+            ForeColor = AppTheme.TextSecondary,
+            Margin = new Padding(0, 4, 0, 0)
+        };
+
+        layout.Controls.Add(styleRow, 0, 2);
+        layout.Controls.Add(metricsRow, 0, 3);
+        layout.Controls.Add(colorsRow, 0, 4);
+        layout.Controls.Add(tipLabel, 0, 5);
+        card.Controls.Add(layout);
+        return card;
+    }
+
+    private CardPanel BuildThemeSettingsCard()
+    {
+        var card = new CardPanel
+        {
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            FillColor = AppTheme.Surface,
+            BorderColor = AppTheme.Border,
+            CornerRadius = 18,
+            Margin = new Padding(0, 0, 0, 14),
+            InnerPadding = new Padding(18)
+        };
+
+        var layout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            ColumnCount = 1,
+            RowCount = 3,
+            BackColor = AppTheme.Surface,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink
+        };
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+
+        layout.Controls.Add(new Label
+        {
+            Text = "Theme Studio",
+            AutoSize = true,
+            Font = AppTheme.TitleFont(14f),
+            ForeColor = AppTheme.TextPrimary
+        }, 0, 0);
+        layout.Controls.Add(new Label
+        {
+            Text = "Pick a shell theme for CloudFrame. Restart to apply the full app chrome cleanly so every surface, card, and tab stays consistent.",
+            AutoSize = true,
+            MaximumSize = new Size(920, 0),
+            Font = AppTheme.BodyFont(9.5f),
+            ForeColor = AppTheme.TextSecondary,
+            Margin = new Padding(0, 6, 0, 12)
+        }, 0, 1);
+
+        var flow = new FlowLayoutPanel
+        {
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            WrapContents = true,
+            BackColor = AppTheme.Surface
+        };
+
+        flow.Controls.Add(new Label
+        {
+            Text = "App theme:",
+            AutoSize = true,
+            ForeColor = AppTheme.TextSecondary,
+            Font = AppTheme.CaptionFont(9.5f),
+            Padding = new Padding(0, 7, 6, 0)
+        });
+
+        _themePresetComboBox = AppTheme.StyleComboBox(new ComboBox
+        {
+            DropDownStyle = ComboBoxStyle.DropDownList,
+            Width = 168,
+            Margin = new Padding(0, 4, 16, 4)
+        });
+        foreach (var preset in Enum.GetValues<AppThemePreset>())
+        {
+            _themePresetComboBox.Items.Add(preset);
+        }
+
+        var themeIndex = _themePresetComboBox.Items.IndexOf(_settings.ThemePreset);
+        _themePresetComboBox.SelectedIndex = themeIndex >= 0 ? themeIndex : 0;
+        _themePresetComboBox.SelectedIndexChanged += (_, _) =>
+        {
+            if (_themePresetComboBox.SelectedItem is not AppThemePreset preset || preset == _settings.ThemePreset)
+            {
+                return;
+            }
+
+            _settings.ThemePreset = preset;
+            SaveSettings();
+
+            if (MessageBox.Show(
+                    this,
+                    "Theme saved. Restart CloudFrame now to apply the full shell theme cleanly?",
+                    "CloudFrame",
+                    MessageBoxButtons.YesNo,
+                    MessageBoxIcon.Question) == DialogResult.Yes)
+            {
+                Application.Restart();
+                Close();
+            }
+        };
+
+        flow.Controls.Add(_themePresetComboBox);
+        layout.Controls.Add(flow, 0, 2);
         card.Controls.Add(layout);
         return card;
     }

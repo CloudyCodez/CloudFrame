@@ -14,7 +14,7 @@ internal sealed class BoostGaugeControl : Control
     public BoostGaugeControl()
     {
         SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw | ControlStyles.UserPaint, true);
-        Height = 94;
+        Height = 108;
         BackColor = AppTheme.Surface;
         ForeColor = AppTheme.TextPrimary;
 
@@ -123,7 +123,7 @@ internal sealed class BoostGaugeControl : Control
         // Detail text
         if (!string.IsNullOrWhiteSpace(_detail))
         {
-            var detailRect = new Rectangle(14, 56, Width - 28, 32);
+            var detailRect = new Rectangle(14, 58, Width - 28, 40);
             TextRenderer.DrawText(g, _detail, AppTheme.BodyFont(8.8f), detailRect,
                 AppTheme.TextSecondary, TextFormatFlags.EndEllipsis | TextFormatFlags.WordBreak);
         }

@@ -16,6 +16,22 @@ public enum OverlayStyle
     Minimal
 }
 
+public enum AppThemePreset
+{
+    Graphite,
+    Midnight,
+    Ember,
+    Frost
+}
+
+public enum OverlayFontPreset
+{
+    Bahnschrift,
+    Segoe,
+    Consolas,
+    Trebuchet
+}
+
 internal sealed class AppSettings
 {
     // ── Detection / startup ───────────────────────────────────────────────────
@@ -28,6 +44,8 @@ internal sealed class AppSettings
     public string GitHubRepository { get; set; } = string.Empty;
 
     public string? SkippedUpdateVersion { get; set; }
+
+    public AppThemePreset ThemePreset { get; set; } = AppThemePreset.Graphite;
 
     // ── Universal boost defaults ──────────────────────────────────────────────
     public bool UniversalSwitchPowerPlan { get; set; } = true;
@@ -66,6 +84,12 @@ internal sealed class AppSettings
     /// Stored as int so the JSON serialiser handles it without a custom converter.
     /// </summary>
     public int OverlayAccentArgb { get; set; } = unchecked((int)0xFFEC40C4);
+
+    public int OverlayTextArgb { get; set; } = unchecked((int)0xFFF8FAFF);
+
+    public int OverlayBackgroundArgb { get; set; } = unchecked((int)0xD20E0E12);
+
+    public OverlayFontPreset OverlayFontPreset { get; set; } = OverlayFontPreset.Bahnschrift;
 
     // ── Advanced boost tweaks ─────────────────────────────────────────────────
     /// <summary>
