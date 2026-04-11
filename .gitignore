@@ -1,0 +1,24 @@
+# Build outputs
+bin/
+obj/
+dist/
+
+# Visual Studio / Rider / user files
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Logs and temporary files
+*.log
+dotnet-out.txt
+dotnet-err.txt
+
+# Local telemetry / capture dumps
+FvSDK*.csv
+*.etl
+
+# OS junk
+Thumbs.db
+Desktop.ini

@@ -1,0 +1,66 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>..\assets\branding\cloudframe-icon.ico</ApplicationIcon>
+    <AssemblyName>CloudFrame</AssemblyName>
+    <Product>CloudFrame</Product>
+    <Title>CloudFrame</Title>
+    <Description>CloudFrame is a safe, modern Windows game-session optimizer by Cloud.</Description>
+    <Company>Cloud</Company>
+    <Authors>Cloud</Authors>
+    <Version>1.0.0</Version>
+    <AssemblyVersion>1.0.0.0</AssemblyVersion>
+    <FileVersion>1.0.0.0</FileVersion>
+    <InformationalVersion>1.0.0</InformationalVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="..\assets\branding\chibi-cloud-watermark.png" LogicalName="CloudFrame.Assets.Branding.ChibiCloudWatermark.png" />
+    <Content Include="ThirdParty\PresentMon\PresentMon-2.4.1-x64.exe">
+      <Link>PresentMon-2.4.1-x64.exe</Link>
+      <TargetPath>PresentMon-2.4.1-x64.exe</TargetPath>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
+  </ItemGroup>
+
+  <Target Name="CopyPresentMon" AfterTargets="Build">
+    <Copy
+      SourceFiles="$(MSBuildProjectDirectory)\ThirdParty\PresentMon\PresentMon-2.4.1-x64.exe"
+      DestinationFolder="$(OutputPath)"
+      SkipUnchangedFiles="true" />
+  </Target>
+
+  <Target Name="StageCleanReleaseLayout" AfterTargets="Publish" Condition="'$(SkipCleanReleaseStage)' != 'true'">
+    <PropertyGroup>
+      <CleanReleaseRoot>$(MSBuildProjectDirectory)\..\dist\CloudFrame</CleanReleaseRoot>
+      <CleanReleaseAppDir>$(CleanReleaseRoot)\app</CleanReleaseAppDir>
+      <CleanReleaseSymbolsDir>$(CleanReleaseRoot)\symbols</CleanReleaseSymbolsDir>
+    </PropertyGroup>
+
+    <RemoveDir Directories="$(CleanReleaseRoot)" Condition="Exists('$(CleanReleaseRoot)')" />
+    <MakeDir Directories="$(CleanReleaseAppDir);$(CleanReleaseSymbolsDir)" />
+
+    <ItemGroup>
+      <CleanReleaseAppFiles Include="$(PublishDir)*.*" Exclude="$(PublishDir)*.pdb" />
+      <CleanReleaseSymbolFiles Include="$(PublishDir)*.pdb" />
+    </ItemGroup>
+
+    <Copy SourceFiles="@(CleanReleaseAppFiles)" DestinationFolder="$(CleanReleaseAppDir)" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="@(CleanReleaseSymbolFiles)" DestinationFolder="$(CleanReleaseSymbolsDir)" SkipUnchangedFiles="true" Condition="'@(CleanReleaseSymbolFiles)' != ''" />
+
+    <WriteLinesToFile
+      File="$(CleanReleaseRoot)\README.txt"
+      Overwrite="true"
+      Lines="CloudFrame clean release layout%0D%0A%0D%0Aapp\\CloudFrame.exe - distributable executable%0D%0Asymbols\\CloudFrame.pdb - debug symbols" />
+  </Target>
+
+</Project>

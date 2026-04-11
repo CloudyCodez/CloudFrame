@@ -1,0 +1,7 @@
+* text=auto
+
+*.cs text
+*.csproj text
+*.md text
+*.yml text
+*.yaml text
