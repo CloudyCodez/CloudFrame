@@ -14,7 +14,8 @@ internal sealed class BoostGaugeControl : Control
     public BoostGaugeControl()
     {
         SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw | ControlStyles.UserPaint, true);
-        Height = 108;
+        Height = 120;
+        MinimumSize = new Size(0, 120);
         BackColor = AppTheme.Surface;
         ForeColor = AppTheme.TextPrimary;
 
@@ -77,17 +78,17 @@ internal sealed class BoostGaugeControl : Control
         g.FillRectangle(backBrush, ClientRectangle);
 
         // Caption
-        var captionRect = new Rectangle(14, 8, Width - 112, 20);
+        var captionRect = new Rectangle(16, 10, Width - 116, 20);
         TextRenderer.DrawText(g, _caption, AppTheme.CaptionFont(9.5f), captionRect,
             AppTheme.TextSecondary, TextFormatFlags.EndEllipsis | TextFormatFlags.VerticalCenter);
 
         // Value %
-        var valueRect = new Rectangle(Width - 96, 6, 82, 22);
+        var valueRect = new Rectangle(Width - 98, 8, 84, 22);
         TextRenderer.DrawText(g, $"{_displayValue:0}%", AppTheme.TitleFont(13f), valueRect,
             ForeColor, TextFormatFlags.Right | TextFormatFlags.VerticalCenter);
 
         // Track
-        var barBounds = new Rectangle(14, 34, Width - 28, 16);
+        var barBounds = new Rectangle(16, 38, Width - 32, 16);
         using var trackPath = AppTheme.CreateRoundedRectangle(barBounds, 8);
         using var trackBrush = new SolidBrush(Color.FromArgb(70, 48, 54, 64));
         using var trackBorder = new Pen(Color.FromArgb(100, 80, 88, 100));
@@ -123,9 +124,9 @@ internal sealed class BoostGaugeControl : Control
         // Detail text
         if (!string.IsNullOrWhiteSpace(_detail))
         {
-            var detailRect = new Rectangle(14, 58, Width - 28, 40);
+            var detailRect = new Rectangle(16, 66, Width - 32, Math.Max(24, Height - 76));
             TextRenderer.DrawText(g, _detail, AppTheme.BodyFont(8.8f), detailRect,
-                AppTheme.TextSecondary, TextFormatFlags.EndEllipsis | TextFormatFlags.WordBreak);
+                AppTheme.TextSecondary, TextFormatFlags.EndEllipsis | TextFormatFlags.WordBreak | TextFormatFlags.NoPadding);
         }
     }
 

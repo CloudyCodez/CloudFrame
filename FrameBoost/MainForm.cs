@@ -495,6 +495,8 @@ internal sealed class MainForm : Form
         var gaugePanel = new CardPanel
         {
             Dock = DockStyle.Top,
+            Height = 128,
+            MinimumSize = new Size(0, 128),
             FillColor = AppTheme.Surface,
             BorderColor = AppTheme.Border,
             CornerRadius = 18,
