@@ -46,7 +46,7 @@ Published executable:
 
 - `.github/workflows/release.yml` builds CloudFrame on every push to `main`
 - tagging a release like `v1.0.0` will also create a GitHub Release with a Windows self-contained zip asset
-- project version metadata is currently set to `1.0.2`
+- project version metadata is currently set to `1.0.3`
 
 ## Public Release Layout
 

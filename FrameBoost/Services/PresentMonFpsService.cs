@@ -35,7 +35,7 @@ internal sealed class PresentMonFpsService : IDisposable
     private double? _latestFps;
     private DateTimeOffset _lastSampleAt = DateTimeOffset.MinValue;
     private DateTimeOffset _lastStartFailureAt = DateTimeOffset.MinValue;
-    private string _status = "Waiting for boosted game";
+    private string _status = "Waiting for a boosted game";
     private string? _lastError;
     private bool _loggedFirstSample;
 
@@ -85,7 +85,7 @@ internal sealed class PresentMonFpsService : IDisposable
             {
                 if (_targetProcessId is null or <= 0 && !_foregroundMode)
                 {
-                    return "Waiting for boosted game";
+                    return "Waiting for a boosted game";
                 }
 
                 if (DateTimeOffset.UtcNow - _lastSampleAt <= SampleFreshness && _latestFps is double)
@@ -117,7 +117,7 @@ internal sealed class PresentMonFpsService : IDisposable
             {
                 _latestFps = null;
                 _lastSampleAt = DateTimeOffset.MinValue;
-                _status = "Waiting for boosted game";
+                _status = "Waiting for a boosted game";
                 _lastAcceptedGamePid = 0;
             }
         }
@@ -178,7 +178,7 @@ internal sealed class PresentMonFpsService : IDisposable
                     _latestFps = null;
                     _lastSampleAt = DateTimeOffset.MinValue;
                 }
-                _status = _foregroundMode ? "Tracking foreground window" : "Waiting for boosted game";
+                _status = _foregroundMode ? "Waiting for FPS data" : "Waiting for a boosted game";
             }
 
         }
@@ -582,7 +582,7 @@ internal sealed class PresentMonFpsService : IDisposable
                 {
                     _lastError = null;
                     _status = _foregroundMode
-                        ? "Tracking foreground window"
+                        ? "Waiting for FPS data"
                         : $"Sampling FPS for {_targetProcessName ?? _targetProcessMatchName ?? "game"}";
                 }
 

@@ -150,6 +150,17 @@ internal sealed class MainForm : Form
         }
     }
 
+    protected override void OnActivated(EventArgs e)
+    {
+        base.OnActivated(e);
+
+        if (WindowState == FormWindowState.Minimized)
+        {
+            WindowState = FormWindowState.Normal;
+            BringToFront();
+        }
+    }
+
     protected override void OnFormClosing(FormClosingEventArgs e)
     {
         _telemetryTimer.Stop();
@@ -3106,7 +3117,7 @@ internal sealed class MainForm : Form
             overlay.UpdateSnapshot(_latestTelemetry);
             if (!overlay.Visible)
             {
-                overlay.Show(this);
+                overlay.Show();
             }
         }
         else
@@ -3136,7 +3147,7 @@ internal sealed class MainForm : Form
             overlay.UpdateSnapshot(_latestTelemetry);
             if (!overlay.Visible)
             {
-                overlay.Show(this);
+                overlay.Show();
             }
             ScheduleTelemetryRefresh();
         }
@@ -3197,7 +3208,7 @@ internal sealed class MainForm : Form
             ? "Toggle the live overlay back on anytime."
             : _latestTelemetry.FramesPerSecond is double fps
                 ? $"{fps:0} FPS live, CPU {_latestTelemetry.CpuPercent:0}%, GPU {(_latestTelemetry.GpuPercent ?? 0):0}%"
-                : _latestTelemetry.FpsStatus ?? "Tracking foreground window";
+                : _latestTelemetry.FpsStatus ?? "Waiting for FPS data";
         _overlayCard.SetContent(
             "LIVE OVERLAY",
             overlayValue,
