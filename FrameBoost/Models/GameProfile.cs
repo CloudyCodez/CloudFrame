@@ -92,6 +92,17 @@ internal sealed class GameProfile
         return EnableRecurringMaintenance;
     }
 
+    public long GetMinimumBackgroundWorkingSetBytes()
+    {
+        return BoostPreset switch
+        {
+            BoostPresetOption.Balanced => 120L * 1024 * 1024,
+            BoostPresetOption.Performance => 80L * 1024 * 1024,
+            BoostPresetOption.MaxFps => 40L * 1024 * 1024,
+            _ => 80L * 1024 * 1024
+        };
+    }
+
     public TimeSpan GetMaintenanceInterval()
     {
         return BoostPreset switch

@@ -578,6 +578,9 @@ internal sealed class BoostCoordinator : IDisposable
 
     private void ApplyBackgroundActions(GameProfile profile, BoostRecoveryState state, int? gameProcessId, bool logActions = true)
     {
+        var touchedProcessIds = new HashSet<int>();
+        var minimumWorkingSetBytes = profile.GetMinimumBackgroundWorkingSetBytes();
+
         foreach (var processName in profile.GetBackgroundProcessNames())
         {
             foreach (var process in Process.GetProcessesByName(processName))
@@ -588,7 +591,30 @@ internal sealed class BoostCoordinator : IDisposable
                     if ((gameProcessId.HasValue && process.Id == gameProcessId.Value)
                         || process.HasExited
                         || _processService.IsProtectedProcess(process)
-                        || process.ProcessName.Equals("CloudFrame", StringComparison.OrdinalIgnoreCase))
+                        || process.ProcessName.Equals("CloudFrame", StringComparison.OrdinalIgnoreCase)
+                        || !touchedProcessIds.Add(process.Id))
+                    {
+                        continue;
+                    }
+
+                    var shouldCloseGracefully = profile.CloseBackgroundAppsGracefully && process.MainWindowHandle != IntPtr.Zero;
+                    var shouldTrimOrThrottle = profile.TrimBackgroundMemory
+                                               || profile.ShouldLowerBackgroundMemoryPriority()
+                                               || profile.ShouldApplyBackgroundEcoQos()
+                                               || profile.LowerBackgroundProcesses;
+
+                    long workingSetBytes = 0;
+                    if (shouldTrimOrThrottle
+                        && _processService.TryGetWorkingSetBytes(process, out var measuredWorkingSetBytes, out _))
+                    {
+                        workingSetBytes = measuredWorkingSetBytes;
+                    }
+
+                    var processLooksHeavy = shouldCloseGracefully
+                                            || workingSetBytes >= minimumWorkingSetBytes
+                                            || existingRestore is not null;
+
+                    if (!processLooksHeavy)
                     {
                         continue;
                     }

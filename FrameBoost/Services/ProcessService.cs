@@ -236,6 +236,29 @@ internal sealed class ProcessService
             out error);
     }
 
+    public bool TryGetWorkingSetBytes(Process process, out long workingSetBytes, out string? error)
+    {
+        workingSetBytes = 0;
+        error = null;
+
+        try
+        {
+            if (process.HasExited)
+            {
+                error = "Process already exited.";
+                return false;
+            }
+
+            workingSetBytes = process.WorkingSet64;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+            return false;
+        }
+    }
+
     public static bool IsProcessAlive(int processId)
     {
         try
