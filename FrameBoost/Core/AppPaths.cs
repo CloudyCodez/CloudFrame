@@ -14,8 +14,13 @@ internal static class AppPaths
 
     public static string LogPath => Path.Combine(BasePath, "frameboost.log");
 
+    public static string UpdatesDirectory => Path.Combine(BasePath, "updates");
+
+    public static string UpdateStagingDirectory => Path.Combine(UpdatesDirectory, "staging");
+
     public static void EnsureDataDirectory()
     {
         Directory.CreateDirectory(BasePath);
+        Directory.CreateDirectory(UpdatesDirectory);
     }
 }

@@ -1,5 +1,6 @@
 using System.Net.Http.Headers;
 using System.Reflection;
+using System.Text.RegularExpressions;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -57,13 +58,21 @@ internal sealed class UpdateCheckerService
                 return UpdateCheckResult.UpToDate(currentVersion);
             }
 
+            var asset = payload.Assets
+                .FirstOrDefault(static candidate =>
+                    candidate.Name.EndsWith(".zip", StringComparison.OrdinalIgnoreCase) &&
+                    candidate.Name.Contains("CloudFrame-win-x64", StringComparison.OrdinalIgnoreCase));
+
             return UpdateCheckResult.Available(
                 currentVersion,
                 payload.TagName,
                 payload.Name,
                 payload.Body,
+                BuildPatchSummaryLines(payload.Body),
                 payload.HtmlUrl,
-                payload.PublishedAt);
+                payload.PublishedAt,
+                asset?.Name ?? string.Empty,
+                asset?.BrowserDownloadUrl ?? string.Empty);
         }
         catch (TaskCanceledException)
         {
@@ -116,6 +125,43 @@ internal sealed class UpdateCheckerService
         return string.Compare(left, right, StringComparison.OrdinalIgnoreCase);
     }
 
+    private static IReadOnlyList<string> BuildPatchSummaryLines(string? releaseNotes)
+    {
+        if (string.IsNullOrWhiteSpace(releaseNotes))
+        {
+            return ["General improvements and fixes."];
+        }
+
+        var lines = releaseNotes
+            .Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(static line => line.Trim())
+            .Where(static line => !string.IsNullOrWhiteSpace(line))
+            .ToList();
+
+        var bulletLines = lines
+            .Where(static line => line.StartsWith("- ") || line.StartsWith("* "))
+            .Select(static line => line[2..].Trim())
+            .Where(static line => line.Length > 3)
+            .Take(6)
+            .ToList();
+
+        if (bulletLines.Count > 0)
+        {
+            return bulletLines;
+        }
+
+        var sentenceMatches = Regex.Matches(releaseNotes, @"[^.!?]+[.!?]?");
+        var fallback = sentenceMatches
+            .Select(static match => match.Value.Trim())
+            .Where(static line => line.Length > 8)
+            .Take(4)
+            .ToList();
+
+        return fallback.Count > 0
+            ? fallback
+            : ["General improvements and fixes."];
+    }
+
     private sealed class GitHubReleasePayload
     {
         [JsonPropertyName("tag_name")]
@@ -132,6 +178,18 @@ internal sealed class UpdateCheckerService
 
         [JsonPropertyName("published_at")]
         public DateTimeOffset? PublishedAt { get; set; }
+
+        [JsonPropertyName("assets")]
+        public List<GitHubReleaseAsset> Assets { get; set; } = [];
+    }
+
+    private sealed class GitHubReleaseAsset
+    {
+        [JsonPropertyName("name")]
+        public string Name { get; set; } = string.Empty;
+
+        [JsonPropertyName("browser_download_url")]
+        public string BrowserDownloadUrl { get; set; } = string.Empty;
     }
 }
 
@@ -143,28 +201,34 @@ internal sealed record UpdateCheckResult(
     string LatestVersion,
     string ReleaseName,
     string ReleaseNotes,
+    IReadOnlyList<string> PatchSummaryLines,
     string ReleaseUrl,
     DateTimeOffset? PublishedAt,
+    string AssetName,
+    string AssetDownloadUrl,
     string Message)
 {
     public static UpdateCheckResult Disabled(string message) =>
-        new(false, false, false, UpdateCheckerService.GetCurrentVersion(), string.Empty, string.Empty, string.Empty, string.Empty, null, message);
+        new(false, false, false, UpdateCheckerService.GetCurrentVersion(), string.Empty, string.Empty, string.Empty, [], string.Empty, null, string.Empty, string.Empty, message);
 
     public static UpdateCheckResult Failed(string message) =>
-        new(true, false, false, UpdateCheckerService.GetCurrentVersion(), string.Empty, string.Empty, string.Empty, string.Empty, null, message);
+        new(true, false, false, UpdateCheckerService.GetCurrentVersion(), string.Empty, string.Empty, string.Empty, [], string.Empty, null, string.Empty, string.Empty, message);
 
     public static UpdateCheckResult UpToDate(string currentVersion) =>
-        new(true, false, false, currentVersion, currentVersion, string.Empty, string.Empty, string.Empty, null, "CloudFrame is already up to date.");
+        new(true, false, false, currentVersion, currentVersion, string.Empty, string.Empty, [], string.Empty, null, string.Empty, string.Empty, "CloudFrame is already up to date.");
 
     public static UpdateCheckResult Skipped(string latestVersion, string releaseUrl) =>
-        new(true, false, true, UpdateCheckerService.GetCurrentVersion(), latestVersion, string.Empty, string.Empty, releaseUrl, null, $"Version {latestVersion} is currently skipped.");
+        new(true, false, true, UpdateCheckerService.GetCurrentVersion(), latestVersion, string.Empty, string.Empty, [], releaseUrl, null, string.Empty, string.Empty, $"Version {latestVersion} is currently skipped.");
 
     public static UpdateCheckResult Available(
         string currentVersion,
         string latestVersion,
         string releaseName,
         string releaseNotes,
+        IReadOnlyList<string> patchSummaryLines,
         string releaseUrl,
-        DateTimeOffset? publishedAt) =>
-        new(true, true, false, currentVersion, latestVersion, releaseName, releaseNotes, releaseUrl, publishedAt, $"CloudFrame {latestVersion} is available.");
+        DateTimeOffset? publishedAt,
+        string assetName,
+        string assetDownloadUrl) =>
+        new(true, true, false, currentVersion, latestVersion, releaseName, releaseNotes, patchSummaryLines, releaseUrl, publishedAt, assetName, assetDownloadUrl, $"CloudFrame {latestVersion} is available.");
 }

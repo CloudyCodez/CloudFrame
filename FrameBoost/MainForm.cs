@@ -19,6 +19,7 @@ internal sealed class MainForm : Form
     private readonly FpsComparisonTracker _fpsComparisonTracker = new();
     private readonly ProfileTuningAdvisor _profileTuningAdvisor = new();
     private readonly UpdateCheckerService _updateCheckerService;
+    private readonly UpdateInstallerService _updateInstallerService;
     private readonly IssueReportService _issueReportService = new();
     private readonly ProcessService _processService = new();
     private readonly PriorityService _priorityService = new();
@@ -136,6 +137,7 @@ internal sealed class MainForm : Form
         AppTheme.ApplyPreset(_settings.ThemePreset);
         _presentMonFpsService = new PresentMonFpsService(_logger);
         _updateCheckerService = new UpdateCheckerService(_logger);
+        _updateInstallerService = new UpdateInstallerService(_logger);
         _powerPlanService = new PowerPlanService(_logger);
         _timerResolutionService = new TimerResolutionService(_logger);
         _registryBoostService   = new WindowsBoostRegistryService(_logger);
@@ -2644,6 +2646,9 @@ internal sealed class MainForm : Form
 
         switch (prompt.Choice)
         {
+            case UpdatePromptChoice.InstallNow:
+                _ = InstallUpdateAsync(result);
+                break;
             case UpdatePromptChoice.OpenRelease:
                 OpenExternalPath(result.ReleaseUrl);
                 _logger.Log($"Opened CloudFrame release page for {result.LatestVersion}.");
@@ -2657,6 +2662,73 @@ internal sealed class MainForm : Form
             default:
                 _logger.Log($"Deferred update prompt for CloudFrame {result.LatestVersion}.");
                 break;
+        }
+    }
+
+    private async Task InstallUpdateAsync(UpdateCheckResult result)
+    {
+        if (_boostCoordinator.ActiveSession is not null)
+        {
+            MessageBox.Show(
+                this,
+                "Restore the current boost session before installing an update. CloudFrame will not update while a boost session is active.",
+                "CloudFrame Update",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+            return;
+        }
+
+        try
+        {
+            Cursor = Cursors.WaitCursor;
+            Enabled = false;
+
+            var prepared = await _updateInstallerService.PrepareUpdateAsync(result);
+            if (prepared is null)
+            {
+                MessageBox.Show(
+                    this,
+                    "CloudFrame found the release, but could not prepare the update package automatically.",
+                    "CloudFrame Update",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+                return;
+            }
+
+            var confirm = MessageBox.Show(
+                this,
+                $"CloudFrame {result.LatestVersion} is ready to install.\r\n\r\nThe app will close, apply the update, and restart automatically.",
+                "CloudFrame Update",
+                MessageBoxButtons.OKCancel,
+                MessageBoxIcon.Information);
+
+            if (confirm != DialogResult.OK)
+            {
+                _logger.Log($"Prepared CloudFrame {result.LatestVersion}, but the user chose not to restart yet.");
+                return;
+            }
+
+            _logger.Log($"Prepared CloudFrame {result.LatestVersion}. Restarting to apply the update.");
+            _updateInstallerService.LaunchInstallerAndExit(prepared);
+            Close();
+        }
+        catch (Exception ex)
+        {
+            _logger.Log($"Automatic update failed: {ex.Message}");
+            MessageBox.Show(
+                this,
+                $"CloudFrame could not apply the update automatically.\r\n\r\n{ex.Message}",
+                "CloudFrame Update",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Error);
+        }
+        finally
+        {
+            if (!IsDisposed)
+            {
+                Enabled = true;
+                Cursor = Cursors.Default;
+            }
         }
     }
 

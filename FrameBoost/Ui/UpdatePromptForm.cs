@@ -5,6 +5,7 @@ namespace FrameBoost.Ui;
 internal enum UpdatePromptChoice
 {
     Later,
+    InstallNow,
     OpenRelease,
     SkipVersion
 }
@@ -26,10 +27,11 @@ internal sealed class UpdatePromptForm : Form
         {
             Dock = DockStyle.Fill,
             ColumnCount = 1,
-            RowCount = 4,
+            RowCount = 5,
             Padding = new Padding(18),
             BackColor = AppTheme.Canvas
         };
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
@@ -63,6 +65,48 @@ internal sealed class UpdatePromptForm : Form
             Margin = new Padding(0, 8, 0, 14)
         }, 0, 1);
 
+        var summaryCard = new CardPanel
+        {
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            FillColor = AppTheme.Surface,
+            BorderColor = AppTheme.Border,
+            CornerRadius = 18,
+            InnerPadding = new Padding(18),
+            Margin = new Padding(0, 0, 0, 14)
+        };
+        var summaryLayout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            ColumnCount = 1,
+            RowCount = 2,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            BackColor = AppTheme.Surface
+        };
+        summaryLayout.Controls.Add(new Label
+        {
+            Text = "What changed in this patch",
+            AutoSize = true,
+            ForeColor = AppTheme.TextPrimary,
+            Font = AppTheme.TitleFont(12f),
+            BackColor = AppTheme.Surface
+        }, 0, 0);
+        var bulletText = string.Join(Environment.NewLine, result.PatchSummaryLines.Select(static line => $"- {line}"));
+        summaryLayout.Controls.Add(new Label
+        {
+            Text = bulletText,
+            AutoSize = true,
+            MaximumSize = new Size(620, 0),
+            ForeColor = AppTheme.TextSecondary,
+            Font = AppTheme.BodyFont(9.5f),
+            BackColor = AppTheme.Surface,
+            Margin = new Padding(0, 8, 0, 0)
+        }, 0, 1);
+        summaryCard.Controls.Add(summaryLayout);
+        root.Controls.Add(summaryCard, 0, 2);
+
         var notesCard = new CardPanel
         {
             Dock = DockStyle.Fill,
@@ -84,7 +128,7 @@ internal sealed class UpdatePromptForm : Form
                 : result.ReleaseNotes.Trim()
         });
         notesCard.Controls.Add(notesBox);
-        root.Controls.Add(notesCard, 0, 2);
+        root.Controls.Add(notesCard, 0, 3);
 
         var buttonFlow = new FlowLayoutPanel
         {
@@ -96,8 +140,15 @@ internal sealed class UpdatePromptForm : Form
             Margin = new Padding(0, 14, 0, 0)
         };
 
-        var updateButton = AppTheme.CreateButton("Open Release", primary: true, width: 152);
+        var updateButton = AppTheme.CreateButton("Install and Restart", primary: true, width: 168);
         updateButton.Click += (_, _) =>
+        {
+            Choice = UpdatePromptChoice.InstallNow;
+            DialogResult = DialogResult.OK;
+        };
+
+        var releaseButton = AppTheme.CreateButton("Open Release Page", width: 152);
+        releaseButton.Click += (_, _) =>
         {
             Choice = UpdatePromptChoice.OpenRelease;
             DialogResult = DialogResult.OK;
@@ -118,9 +169,10 @@ internal sealed class UpdatePromptForm : Form
         };
 
         buttonFlow.Controls.Add(updateButton);
+        buttonFlow.Controls.Add(releaseButton);
         buttonFlow.Controls.Add(skipButton);
         buttonFlow.Controls.Add(laterButton);
-        root.Controls.Add(buttonFlow, 0, 3);
+        root.Controls.Add(buttonFlow, 0, 4);
 
         AcceptButton = updateButton;
         CancelButton = laterButton;
