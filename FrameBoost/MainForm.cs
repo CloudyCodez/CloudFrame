@@ -119,6 +119,7 @@ internal sealed class MainForm : Form
     private bool _startupReady;
     private bool _startupFallbackMode;
     private bool _restoringFromTray;
+    private bool _forceExitRequested;
     private bool _isCheckingForUpdates;
     private ActiveBoostSession? _lastLiveSession;
     private SessionReport? _lastSessionReport;
@@ -189,7 +190,7 @@ internal sealed class MainForm : Form
     {
         base.OnActivated(e);
 
-        if (WindowState == FormWindowState.Minimized)
+        if (_restoringFromTray && WindowState == FormWindowState.Minimized)
         {
             WindowState = FormWindowState.Normal;
             BringToFront();
@@ -198,6 +199,31 @@ internal sealed class MainForm : Form
 
     protected override void OnFormClosing(FormClosingEventArgs e)
     {
+        if (e.CloseReason == CloseReason.UserClosing && !_forceExitRequested)
+        {
+            var result = MessageBox.Show(
+                this,
+                "Would you like to close CloudFrame fully or send it to the tray?\r\n\r\nYes = close fully\r\nNo = exit to tray\r\nCancel = stay open",
+                "Exit CloudFrame",
+                MessageBoxButtons.YesNoCancel,
+                MessageBoxIcon.Question);
+
+            if (result == DialogResult.Cancel)
+            {
+                e.Cancel = true;
+                return;
+            }
+
+            if (result == DialogResult.No)
+            {
+                e.Cancel = true;
+                SendToTray("CloudFrame was sent to the tray.");
+                return;
+            }
+
+            _forceExitRequested = true;
+        }
+
         _telemetryTimer.Stop();
         _presentMonFpsService.Dispose();
         _systemTelemetryService.Dispose();
@@ -227,7 +253,11 @@ internal sealed class MainForm : Form
         var restoreItem = new ToolStripMenuItem("Open CloudFrame");
         restoreItem.Click += (_, _) => RestoreFromTray();
         var exitItem = new ToolStripMenuItem("Exit CloudFrame");
-        exitItem.Click += (_, _) => Close();
+        exitItem.Click += (_, _) =>
+        {
+            _forceExitRequested = true;
+            Close();
+        };
         trayMenu.Items.Add(restoreItem);
         trayMenu.Items.Add(new ToolStripSeparator());
         trayMenu.Items.Add(exitItem);
@@ -2409,10 +2439,7 @@ internal sealed class MainForm : Form
             return;
         }
 
-        _trayIcon.Visible = true;
-        ShowInTaskbar = false;
-        Hide();
-        _logger.Log("CloudFrame minimized to the tray.");
+        SendToTray("CloudFrame minimized to the tray.");
     }
 
     private void RestoreFromTray()
@@ -2436,6 +2463,19 @@ internal sealed class MainForm : Form
         {
             _restoringFromTray = false;
         }
+    }
+
+    private void SendToTray(string logMessage)
+    {
+        if (_trayIcon is null)
+        {
+            return;
+        }
+
+        _trayIcon.Visible = true;
+        ShowInTaskbar = false;
+        Hide();
+        _logger.Log(logMessage);
     }
 
     private async Task LoadPowerPlansAsync()
