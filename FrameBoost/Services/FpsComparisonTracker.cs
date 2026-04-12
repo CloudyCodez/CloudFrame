@@ -17,7 +17,7 @@ internal sealed class FpsComparisonTracker
     private double? _baselineAtSessionStart;
     private FpsDeltaSnapshot _lastCompleted = FpsDeltaSnapshot.Empty;
 
-    public void Observe(TelemetrySnapshot telemetry, ActiveBoostSession? session)
+    public void Observe(TelemetrySnapshot telemetry, ActiveBoostSession? session, bool baselineEligible)
     {
         var fps = telemetry.FramesPerSecond;
         var hasActiveBoost = session is not null && !session.RecoveryState.IsPreLaunchBoost;
@@ -40,7 +40,7 @@ internal sealed class FpsComparisonTracker
 
         CompleteSessionIfNeeded();
 
-        if (fps is > 0)
+        if (baselineEligible && fps is > 0)
         {
             Enqueue(_idleSamples, fps.Value, IdleBaselineSampleLimit);
         }

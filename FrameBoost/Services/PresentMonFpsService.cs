@@ -41,6 +41,9 @@ internal sealed class PresentMonFpsService : IDisposable
     private bool _loggedFirstSample;
     private HashSet<int> _acceptedTargetProcessIds = [];
     private DateTimeOffset _acceptedTargetPidsSampledAt = DateTimeOffset.MinValue;
+    private readonly Queue<FpsTimedSample> _recentSamples = new();
+    private const double FpsSmoothingAlpha = 0.55d;
+    private double? _smoothedFps;
 
     // Cached foreground PID — refreshed on a slow poll so per-frame Win32 calls
     // don't race against the CSV reader and drop legitimate frames.
@@ -110,10 +113,6 @@ internal sealed class PresentMonFpsService : IDisposable
         }
     }
 
-    /// <summary>
-    /// Enable global foreground-mode FPS capture so the overlay shows live FPS
-    /// for whatever window has focus, even without an active boost session.
-    /// </summary>
     public void SetForegroundMode(bool enabled)
     {
         lock (_sync)
@@ -150,13 +149,11 @@ internal sealed class PresentMonFpsService : IDisposable
 
             if (compatibilityMode)
             {
-                // PresentMon 2.4.1 uses ETW global capture — no process injection,
-                // so it is safe with EAC, BattlEye, and other anti-cheat systems.
-                // Keep tracking the PID so ReadStdoutAsync can match frames.
                 _targetProcessId = processId is int validCompat && validCompat > 0 ? validCompat : null;
                 _targetProcessName = string.IsNullOrWhiteSpace(processDisplayName) ? processMatchName : processDisplayName;
                 _targetProcessMatchName = processMatchName;
                 ResetAcceptedTargetProcessIds();
+                ResetRecentSamples();
                 _latestFps = null;
                 _lastSampleAt = DateTimeOffset.MinValue;
                 _lastError = null;
@@ -171,6 +168,7 @@ internal sealed class PresentMonFpsService : IDisposable
                 if (targetChanged)
                 {
                     ResetAcceptedTargetProcessIds();
+                    ResetRecentSamples();
                 }
                 _lastError = null;
 
@@ -186,6 +184,7 @@ internal sealed class PresentMonFpsService : IDisposable
                 _targetProcessName = null;
                 _targetProcessMatchName = null;
                 ResetAcceptedTargetProcessIds();
+                ResetRecentSamples();
                 _lastError = null;
                 if (!_foregroundMode)
                 {
@@ -232,9 +231,6 @@ internal sealed class PresentMonFpsService : IDisposable
                     return;
                 }
 
-                // Compatibility mode no longer gates FPS capture — PresentMon 2.4.1
-                // uses ETW global capture with no injection, safe with all anti-cheat.
-
                 if (snapshot.PresentMonPath is null)
                 {
                     lock (_sync)
@@ -246,7 +242,6 @@ internal sealed class PresentMonFpsService : IDisposable
                     continue;
                 }
 
-                // Run capture if we have a boosted PID OR foreground mode is on
                 if (snapshot.TargetProcessId is null or <= 0 && !snapshot.ForegroundMode)
                 {
                     StopCaptureCore();
@@ -280,7 +275,6 @@ internal sealed class PresentMonFpsService : IDisposable
 
         lock (_sync)
         {
-            // Allow capture when foreground mode is on even if no boosted PID is set
             if (_disposed || _captureActive || _compatibilityMode)
             {
                 return;
@@ -295,6 +289,7 @@ internal sealed class PresentMonFpsService : IDisposable
             _captureActive = true;
             _loggedFirstSample = false;
             _lastError = null;
+            ResetRecentSamples();
             _status = _latestFps is double && DateTimeOffset.UtcNow - _lastSampleAt <= SampleFreshness
                 ? $"Tracking FPS for {targetLabel}"
                 : $"Sampling FPS for {targetLabel}";
@@ -308,10 +303,6 @@ internal sealed class PresentMonFpsService : IDisposable
             TerminateStalePresentMonProcesses(presentMonPath);
             KillStaleEtwSessions(presentMonPath);
 
-            // Run global capture (no --process_id). The CSV reader filters by
-            // foreground window PID so launcher-wrapped games are handled automatically.
-            // --stop_existing_session cleans up any orphaned ETW session from a
-            // previous crash so we never get exit code 6.
             process = new Process
             {
                 StartInfo = new ProcessStartInfo
@@ -350,7 +341,7 @@ internal sealed class PresentMonFpsService : IDisposable
                 _presentMonProcess = process;
             }
 
-            _logger.Log($"PresentMon started in global capture mode for '{targetLabel}'.");
+            _logger.Log($"PresentMon started for '{targetLabel}'.");
 
             _ = Task.Run(() => ReadStdoutAsync(process, sessionVersion, captureCts!.Token));
             _ = Task.Run(() => ReadStderrAsync(process, sessionVersion, captureCts!.Token));
@@ -515,7 +506,7 @@ internal sealed class PresentMonFpsService : IDisposable
                         return;
                     }
 
-                    _latestFps = sample.Fps;
+                    _latestFps = UpdateSmoothedFps(sample.Fps);
                     _lastSampleAt = DateTimeOffset.UtcNow;
                     _lastError = null;
                     _status = $"Tracking FPS for {_targetProcessName ?? _targetProcessMatchName ?? sample.Application ?? "game"}";
@@ -523,7 +514,7 @@ internal sealed class PresentMonFpsService : IDisposable
                     if (!_loggedFirstSample)
                     {
                         _loggedFirstSample = true;
-                        _logger.Log($"PresentMon first FPS sample: {sample.Fps:0.0} FPS from '{sample.Application ?? "unknown"}' (PID {sample.ProcessId?.ToString() ?? "unknown"})");
+                        _logger.Log($"PresentMon first FPS sample: {_latestFps:0.0} FPS from '{sample.Application ?? "unknown"}' (PID {sample.ProcessId?.ToString() ?? "unknown"})");
                     }
                 }
             }
@@ -659,6 +650,37 @@ internal sealed class PresentMonFpsService : IDisposable
         _acceptedTargetPidsSampledAt = DateTimeOffset.MinValue;
     }
 
+    private void ResetRecentSamples()
+    {
+        _recentSamples.Clear();
+        _smoothedFps = null;
+    }
+
+    private double UpdateSmoothedFps(double rawFps)
+    {
+        var now = DateTimeOffset.UtcNow;
+        _recentSamples.Enqueue(new FpsTimedSample(now, rawFps));
+        while (_recentSamples.Count > 0 && now - _recentSamples.Peek().CapturedAt > TimeSpan.FromMilliseconds(350))
+        {
+            _recentSamples.Dequeue();
+        }
+
+        if (_recentSamples.Count == 0)
+        {
+            _smoothedFps = rawFps;
+            return rawFps;
+        }
+
+        _smoothedFps = _smoothedFps is null
+            ? rawFps
+            : (_smoothedFps.Value * (1d - FpsSmoothingAlpha)) + (rawFps * FpsSmoothingAlpha);
+
+        // Blend the quick EMA with the short rolling average so the overlay stays
+        // responsive without flickering wildly frame-to-frame.
+        var rollingAverage = _recentSamples.Average(static sample => sample.Fps);
+        return (_smoothedFps.Value * 0.7d) + (rollingAverage * 0.3d);
+    }
+
     private static HashSet<int> BuildAcceptedTargetProcessIds(int targetProcessId)
     {
         var accepted = new HashSet<int> { targetProcessId };
@@ -762,6 +784,7 @@ internal sealed class PresentMonFpsService : IDisposable
             _latestFps = null;
             _lastSampleAt = DateTimeOffset.MinValue;
             ResetAcceptedTargetProcessIds();
+            ResetRecentSamples();
             process = _presentMonProcess;
             captureCts = _captureCts;
             _presentMonProcess = null;
@@ -873,16 +896,6 @@ internal sealed class PresentMonFpsService : IDisposable
     {
         value = 0;
 
-        if (TryReadDouble(values, headerMap, "avgfps", out value))
-        {
-            return value > 0;
-        }
-
-        if (TryReadDouble(values, headerMap, "fps", out value))
-        {
-            return value > 0;
-        }
-
         if (TryReadDouble(values, headerMap, "msbetweenpresents", out var msBetweenPresents) && msBetweenPresents > 0)
         {
             value = 1000d / msBetweenPresents;
@@ -893,6 +906,16 @@ internal sealed class PresentMonFpsService : IDisposable
         {
             value = 1000d / msBetweenDisplay;
             return double.IsFinite(value) && value > 0;
+        }
+
+        if (TryReadDouble(values, headerMap, "fps", out value))
+        {
+            return value > 0;
+        }
+
+        if (TryReadDouble(values, headerMap, "avgfps", out value))
+        {
+            return value > 0;
         }
 
         return false;
@@ -1172,6 +1195,7 @@ internal sealed class PresentMonFpsService : IDisposable
         bool IsDisposed);
 
     private readonly record struct FpsSample(int? ProcessId, string? Application, double Fps);
+    private readonly record struct FpsTimedSample(DateTimeOffset CapturedAt, double Fps);
 
     private readonly record struct ProcessTreeEntry(int ProcessId, int ParentProcessId, string ExecutableName);
 

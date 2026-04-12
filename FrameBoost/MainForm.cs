@@ -100,6 +100,22 @@ internal sealed class MainForm : Form
     private Label _profileCountLabel = null!;
     private Label _qualityLabel = null!;
     private Label _footerLabel = null!;
+    private TabControl _mainTabs = null!;
+    private Label _toolsPreviewThemeLabel = null!;
+    private Label _toolsPreviewOverlayLabel = null!;
+    private Label _toolsPreviewMonitoringLabel = null!;
+    private Label _toolsPreviewDefaultsLabel = null!;
+    private Label _dashboardSummaryLabel = null!;
+    private Label _dashboardSummaryDetailLabel = null!;
+    private Label _advisorLabel = null!;
+    private Label _advisorDetailLabel = null!;
+    private CheckBox _advancedViewCheckBox = null!;
+    private Control _dashboardGaugePanel = null!;
+    private Control _dashboardSessionReportPanel = null!;
+    private Control _dashboardRecommendationPanel = null!;
+    private GroupBox _dashboardMatchesGroup = null!;
+    private GroupBox _dashboardLogGroup = null!;
+    private readonly ToolTip _uiToolTip = new();
     private CheckBox _switchPowerPlanCheckBox = null!;
     private CheckBox _boostGamePriorityCheckBox = null!;
     private CheckBox _lowerBackgroundCheckBox = null!;
@@ -111,11 +127,14 @@ internal sealed class MainForm : Form
     private MetricCard _impactCard = null!;
     private MetricCard _deltaCard = null!;
     private BoostGaugeControl _boostGauge = null!;
+    private DashboardBackdropPanel? _dashboardBackdropPanel;
     private PerformanceOverlayForm? _overlayForm;
     private NotifyIcon? _trayIcon;
     private TelemetrySnapshot _latestTelemetry = new();
     private bool _isSyncingBoostControls;
     private bool _isSyncingOverlayStudio;
+    private bool _profileStudioDirty = true;
+    private bool _toolsUiDirty = true;
     private bool _startupReady;
     private bool _startupFallbackMode;
     private bool _restoringFromTray;
@@ -305,7 +324,7 @@ internal sealed class MainForm : Form
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
-        var tabs = new TabControl
+        _mainTabs = new TabControl
         {
             Dock = DockStyle.Fill,
             Padding = new Point(18, 8),
@@ -314,9 +333,12 @@ internal sealed class MainForm : Form
             ForeColor = AppTheme.TextPrimary
         };
 
-        tabs.TabPages.Add(BuildSafeTab("Dashboard", BuildDashboardTab));
-        tabs.TabPages.Add(BuildSafeTab("Profiles", BuildProfilesTab));
-        tabs.TabPages.Add(BuildSafeTab("Tools", BuildToolsTab));
+        _mainTabs.SuspendLayout();
+        _mainTabs.TabPages.Add(BuildSafeTab("Dashboard", BuildDashboardTab));
+        _mainTabs.TabPages.Add(BuildSafeTab("Profiles", BuildProfilesTab));
+        _mainTabs.TabPages.Add(BuildSafeTab("Tools", BuildToolsTab));
+        _mainTabs.ResumeLayout();
+        _mainTabs.SelectedIndexChanged += (_, _) => UpdateAnimatedUiState();
 
         _footerLabel = new Label
         {
@@ -329,7 +351,7 @@ internal sealed class MainForm : Form
             AutoSize = true
         };
 
-        root.Controls.Add(tabs, 0, 0);
+        root.Controls.Add(_mainTabs, 0, 0);
         root.Controls.Add(_footerLabel, 0, 1);
         Controls.Add(root);
     }
@@ -441,23 +463,26 @@ internal sealed class MainForm : Form
     private TabPage BuildDashboardTab()
     {
         var tab = new TabPage("Dashboard");
-        var scrollHost = new Panel
+        var scrollHost = new DashboardBackdropPanel
         {
             Dock = DockStyle.Fill,
             AutoScroll = true,
             BackColor = AppTheme.Canvas
         };
+        _dashboardBackdropPanel = scrollHost;
         var root = new TableLayoutPanel
         {
             Dock = DockStyle.Top,
             AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
             ColumnCount = 1,
-            RowCount = 10,
+            RowCount = 12,
             Padding = new Padding(12),
             BackColor = AppTheme.Canvas,
             Margin = new Padding(0)
         };
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -523,12 +548,24 @@ internal sealed class MainForm : Form
             WrapContents = false,
             BackColor = AppTheme.Canvas
         };
-        var heroBoostButton = AppTheme.CreateButton("Boost Now", primary: true, width: 164);
+        var heroBoostButton = AppTheme.CreateButton("Optimize Automatically", primary: true, width: 208);
         heroBoostButton.Click += async (_, _) => await UniversalBoostNowAsync();
         var heroStartButton = AppTheme.CreateButton("Scan Running Games", width: 164);
         heroStartButton.Click += (_, _) => ManualScanNow();
+        _advancedViewCheckBox = new CheckBox
+        {
+            Text = "Advanced View",
+            AutoSize = true,
+            Checked = false,
+            ForeColor = Color.White,
+            Font = AppTheme.CaptionFont(9.5f),
+            BackColor = Color.Transparent,
+            Padding = new Padding(0, 8, 0, 0)
+        };
+        _advancedViewCheckBox.CheckedChanged += (_, _) => UpdateDashboardAdvancedMode();
         heroButtons.Controls.Add(heroBoostButton);
         heroButtons.Controls.Add(heroStartButton);
+        heroButtons.Controls.Add(_advancedViewCheckBox);
 
         var heroMascot = CreateHeroMascot();
 
@@ -540,6 +577,45 @@ internal sealed class MainForm : Form
 
         heroLayout.Controls.Add(heroButtons, 2, 0);
         hero.Controls.Add(heroLayout);
+
+        var summaryStrip = new CardPanel
+        {
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            FillColor = AppTheme.Surface,
+            BorderColor = AppTheme.Border,
+            CornerRadius = 18,
+            Margin = new Padding(0, 12, 0, 10),
+            InnerPadding = new Padding(16)
+        };
+        var summaryLayout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            ColumnCount = 1,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            BackColor = AppTheme.Surface
+        };
+        _dashboardSummaryLabel = new Label
+        {
+            AutoSize = true,
+            Font = AppTheme.TitleFont(14f),
+            ForeColor = AppTheme.TextPrimary,
+            BackColor = AppTheme.Surface
+        };
+        _dashboardSummaryDetailLabel = new Label
+        {
+            AutoSize = true,
+            MaximumSize = new Size(1100, 0),
+            Font = AppTheme.BodyFont(9.5f),
+            ForeColor = AppTheme.TextSecondary,
+            BackColor = AppTheme.Surface,
+            Margin = new Padding(0, 6, 0, 0)
+        };
+        summaryLayout.Controls.Add(_dashboardSummaryLabel, 0, 0);
+        summaryLayout.Controls.Add(_dashboardSummaryDetailLabel, 0, 1);
+        summaryStrip.Controls.Add(summaryLayout);
 
         // ── Live stat rings ───────────────────────────────────────────────────
         _cpuRing = new LiveStatRing
@@ -601,6 +677,14 @@ internal sealed class MainForm : Form
         gaugeRow.Controls.Add(_cpuRing);
         gaugeRow.Controls.Add(_gpuRing);
         gaugeRow.Controls.Add(_fpsRing);
+        _uiToolTip.SetToolTip(_boostStatusCard, "Current boost state for the selected game or universal session.");
+        _uiToolTip.SetToolTip(_compatibilityCard, "Whether CloudFrame is using a safer compatibility path because of anti-cheat or engine behavior.");
+        _uiToolTip.SetToolTip(_overlayCard, "Current overlay state and the last readable FPS/CPU/GPU snapshot.");
+        _uiToolTip.SetToolTip(_impactCard, "Boost plan scope is CloudFrame's estimate of how much tuning is active.");
+        _uiToolTip.SetToolTip(_deltaCard, "Measured delta is the real observed before/after FPS comparison when enough samples exist.");
+        _uiToolTip.SetToolTip(_cpuRing, "CPU utilization across the machine right now.");
+        _uiToolTip.SetToolTip(_gpuRing, "GPU utilization from Windows GPU telemetry.");
+        _uiToolTip.SetToolTip(_fpsRing, "Live FPS sampled from the current boosted game session.");
 
         var gaugePanel = new CardPanel
         {
@@ -618,9 +702,11 @@ internal sealed class MainForm : Form
             Dock = DockStyle.Fill,
             Margin = new Padding(0)
         };
+        _uiToolTip.SetToolTip(_boostGauge, "Boost scope shows planned or applied optimization actions, not guaranteed FPS gain.");
         _boostGauge.Caption = "Boost gauge";
         _boostGauge.Detail = "Preset-driven estimate of tuning strength and scope.";
         gaugePanel.Controls.Add(_boostGauge);
+        _dashboardGaugePanel = gaugePanel;
 
         var sessionReportPanel = new CardPanel
         {
@@ -674,6 +760,7 @@ internal sealed class MainForm : Form
         sessionReportLayout.Controls.Add(_sessionReportLabel, 0, 1);
         sessionReportLayout.Controls.Add(_sessionReportDetailLabel, 0, 2);
         sessionReportPanel.Controls.Add(sessionReportLayout);
+        _dashboardSessionReportPanel = sessionReportPanel;
 
         var recommendationPanel = new CardPanel
         {
@@ -731,6 +818,55 @@ internal sealed class MainForm : Form
         recommendationLayout.Controls.Add(_recommendationDetailLabel, 0, 2);
         recommendationLayout.Controls.Add(applyRecommendationButton, 0, 3);
         recommendationPanel.Controls.Add(recommendationLayout);
+        _dashboardRecommendationPanel = recommendationPanel;
+
+        var advisorPanel = new CardPanel
+        {
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            FillColor = AppTheme.Surface,
+            BorderColor = AppTheme.Border,
+            CornerRadius = 18,
+            Margin = new Padding(0, 0, 0, 12),
+            InnerPadding = new Padding(16)
+        };
+        var advisorLayout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            ColumnCount = 1,
+            RowCount = 3,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            BackColor = AppTheme.Surface
+        };
+        advisorLayout.Controls.Add(new Label
+        {
+            Text = "AI Performance Advisor",
+            AutoSize = true,
+            Font = AppTheme.TitleFont(14f),
+            ForeColor = AppTheme.TextPrimary,
+            BackColor = AppTheme.Surface
+        }, 0, 0);
+        _advisorLabel = new Label
+        {
+            AutoSize = true,
+            Font = AppTheme.BodyFont(10f),
+            ForeColor = AppTheme.AccentSoft,
+            BackColor = AppTheme.Surface,
+            Margin = new Padding(0, 8, 0, 6)
+        };
+        _advisorDetailLabel = new Label
+        {
+            AutoSize = true,
+            MaximumSize = new Size(1100, 0),
+            Font = AppTheme.CaptionFont(9.5f),
+            ForeColor = AppTheme.TextSecondary,
+            BackColor = AppTheme.Surface
+        };
+        advisorLayout.Controls.Add(_advisorLabel, 0, 1);
+        advisorLayout.Controls.Add(_advisorDetailLabel, 0, 2);
+        advisorPanel.Controls.Add(advisorLayout);
 
         var controlPanel = new CardPanel
         {
@@ -1023,7 +1159,7 @@ internal sealed class MainForm : Form
         detectedPanel.Controls.Add(_detectedFilterTextBox, 0, 0);
         detectedPanel.Controls.Add(_detectedGrid, 0, 1);
 
-        var detectedGroup = new GroupBox
+        _dashboardMatchesGroup = new GroupBox
         {
             Text = "Running Matches",
             Dock = DockStyle.Fill,
@@ -1031,9 +1167,9 @@ internal sealed class MainForm : Form
             ForeColor = AppTheme.TextPrimary,
             BackColor = AppTheme.Canvas
         };
-        detectedGroup.Controls.Add(detectedPanel);
+        _dashboardMatchesGroup.Controls.Add(detectedPanel);
 
-        var logGroup = new GroupBox
+        _dashboardLogGroup = new GroupBox
         {
             Text = "Activity Log",
             Dock = DockStyle.Fill,
@@ -1041,18 +1177,20 @@ internal sealed class MainForm : Form
             ForeColor = AppTheme.TextPrimary,
             BackColor = AppTheme.Canvas
         };
-        logGroup.Controls.Add(_logTextBox);
+        _dashboardLogGroup.Controls.Add(_logTextBox);
 
         root.Controls.Add(hero, 0, 0);
-        root.Controls.Add(metricCardRow, 0, 1);
-        root.Controls.Add(gaugeRow, 0, 2);
-        root.Controls.Add(gaugePanel, 0, 3);
-        root.Controls.Add(sessionReportPanel, 0, 4);
-        root.Controls.Add(recommendationPanel, 0, 5);
-        root.Controls.Add(controlPanel, 0, 6);
-        root.Controls.Add(statusPanel, 0, 7);
-        root.Controls.Add(detectedGroup, 0, 8);
-        root.Controls.Add(logGroup, 0, 9);
+        root.Controls.Add(summaryStrip, 0, 1);
+        root.Controls.Add(metricCardRow, 0, 2);
+        root.Controls.Add(gaugeRow, 0, 3);
+        root.Controls.Add(advisorPanel, 0, 4);
+        root.Controls.Add(controlPanel, 0, 5);
+        root.Controls.Add(statusPanel, 0, 6);
+        root.Controls.Add(_dashboardMatchesGroup, 0, 7);
+        root.Controls.Add(gaugePanel, 0, 8);
+        root.Controls.Add(sessionReportPanel, 0, 9);
+        root.Controls.Add(recommendationPanel, 0, 10);
+        root.Controls.Add(_dashboardLogGroup, 0, 11);
 
         void syncDashboardLayout()
         {
@@ -1071,6 +1209,7 @@ internal sealed class MainForm : Form
 
         scrollHost.Resize += (_, _) => syncDashboardLayout();
         syncDashboardLayout();
+        UpdateDashboardAdvancedMode();
 
         scrollHost.Controls.Add(root);
         tab.Controls.Add(scrollHost);
@@ -1120,12 +1259,17 @@ internal sealed class MainForm : Form
         var tab = new TabPage("Profiles");
         tab.BackColor = AppTheme.Canvas;
         tab.ForeColor = AppTheme.TextPrimary;
-        var split = new SplitContainer
+        var layout = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
-            SplitterDistance = 320
+            ColumnCount = 2,
+            RowCount = 1,
+            BackColor = AppTheme.Canvas,
+            Padding = new Padding(12, 12, 12, 0)
         };
-        split.BackColor = AppTheme.Canvas;
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 320));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
         var leftPanel = new TableLayoutPanel
         {
@@ -1159,7 +1303,9 @@ internal sealed class MainForm : Form
         var profileButtons = new FlowLayoutPanel
         {
             AutoSize = true,
-            Dock = DockStyle.Fill
+            Dock = DockStyle.Fill,
+            WrapContents = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink
         };
 
         var addButton = AppTheme.CreateButton("Add Profile", primary: true, width: 126);
@@ -1190,18 +1336,27 @@ internal sealed class MainForm : Form
         leftPanel.Controls.Add(profileButtons, 0, 1);
         leftPanel.Controls.Add(_profileCountLabel, 0, 2);
 
-        var rightPanel = new TableLayoutPanel
+        var rightScrollHost = new Panel
         {
             Dock = DockStyle.Fill,
+            AutoScroll = true,
+            BackColor = AppTheme.Canvas,
+            Padding = new Padding(0)
+        };
+
+        var rightPanel = new TableLayoutPanel
+        {
+            Dock = DockStyle.Top,
             ColumnCount = 1,
             RowCount = 2,
             Padding = new Padding(16),
-            AutoScroll = true,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
             BackColor = AppTheme.Canvas
         };
         rightPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         rightPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        rightPanel.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        rightPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
         // ── Boost preset cards with spotlight + tilt effects ─────────────────
         var presetHeader = new Label
@@ -1277,7 +1432,8 @@ internal sealed class MainForm : Form
             WrapContents  = true,
             FlowDirection = FlowDirection.LeftToRight,
             BackColor     = AppTheme.Canvas,
-            Margin        = new Padding(0)
+            Margin        = new Padding(0),
+            AutoSizeMode  = AutoSizeMode.GrowAndShrink
         };
         cardRack.Controls.Add(_balancedCard);
         cardRack.Controls.Add(_performanceCard);
@@ -1341,18 +1497,56 @@ internal sealed class MainForm : Form
         // ── Profile snapshot card ────────────────────────────────────────────────
         _profileSnapshotCard = new ProfileSnapshotCard
         {
-            Margin = new Padding(0, 14, 0, 0)
+            Margin   = new Padding(0, 14, 0, 0),
+            Dock     = DockStyle.Top,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink
         };
-        _profileSnapshotCard.SetProfile(null);
-        _profilesList.SelectedIndexChanged += (_, _) => _profileSnapshotCard?.SetProfile(SelectedProfile);
+        _profileSnapshotCard.EditRequested += (_, _) => EditSelectedProfile();
+        _profileSnapshotCard.SyncRequested += (_, _) => ManualScanNow();
+        _profileSnapshotCard.SettingsRequested += (_, _) =>
+        {
+            if (_mainTabs.TabCount > 2)
+            {
+                _mainTabs.SelectedIndex = 2;
+            }
+        };
+        _profileSnapshotCard.FeedbackRequested += (_, _) => ExportIssueReport();
+        _profileSnapshotCard.ProfileChanged += (_, _) =>
+        {
+            var profile = SelectedProfile;
+            SaveSettings();
+            BindProfiles();
+            SelectProfile(profile);
+            SyncPresetCardSelection();
+            UpdateStatusLabels();
+            UpdateDashboardCards();
+            RequestProfileStudioRefresh();
+        };
+        RequestProfileStudioRefresh();
 
         rightPanel.Controls.Add(presetSection, 0, 0);
         rightPanel.Controls.Add(_profileSnapshotCard, 0, 1);
 
-        split.Panel1.Controls.Add(leftPanel);
-        split.Panel2.Controls.Add(rightPanel);
+        rightScrollHost.Controls.Add(rightPanel);
+        layout.Controls.Add(leftPanel, 0, 0);
+        layout.Controls.Add(rightScrollHost, 1, 0);
 
-        tab.Controls.Add(split);
+        void syncProfilesWorkspaceLayout()
+        {
+            var availableWidth = Math.Max(680, rightScrollHost.ClientSize.Width - 24);
+            rightPanel.MaximumSize = new Size(availableWidth, 0);
+            rightPanel.Width = availableWidth;
+            presetSub.MaximumSize = new Size(Math.Max(360, availableWidth - 40), 0);
+            cardRack.MaximumSize = new Size(Math.Max(360, availableWidth - 12), 0);
+            _profileSnapshotCard.MaximumSize = new Size(availableWidth, 0);
+            _profileSnapshotCard.Width = availableWidth;
+        }
+
+        rightScrollHost.Resize += (_, _) => syncProfilesWorkspaceLayout();
+        syncProfilesWorkspaceLayout();
+
+        tab.Controls.Add(layout);
         return tab;
     }
 
@@ -1373,15 +1567,10 @@ internal sealed class MainForm : Form
             AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
             ColumnCount = 1,
-            RowCount = 9,
-            Padding = new Padding(16),
+            RowCount = 4,
+            Padding = new Padding(16, 20, 16, 16),
             BackColor = AppTheme.Canvas
         };
-        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -1390,9 +1579,11 @@ internal sealed class MainForm : Form
         var buttonFlow = new FlowLayoutPanel
         {
             AutoSize = true,
-            Dock = DockStyle.Fill,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            Dock = DockStyle.Top,
             WrapContents = true,
-            BackColor = AppTheme.Canvas
+            BackColor = AppTheme.Canvas,
+            Margin = new Padding(0, 4, 0, 0)
         };
 
         var refreshPlansButton = AppTheme.CreateButton("Refresh Power Plans", primary: true, width: 156);
@@ -1438,6 +1629,7 @@ internal sealed class MainForm : Form
             FillColor = AppTheme.Surface,
             BorderColor = AppTheme.Border,
             CornerRadius = 18,
+            EnableSpotlight = false,
             Margin = new Padding(0, 0, 0, 14),
             InnerPadding = new Padding(18)
         };
@@ -1500,18 +1692,170 @@ internal sealed class MainForm : Form
         safetyLayout.Controls.Add(_qualityLabel, 0, 3);
         safetyCard.Controls.Add(safetyLayout);
 
-        root.Controls.Add(buttonFlow, 0, 0);
-        root.Controls.Add(BuildThemeSettingsCard(), 0, 1);
-        root.Controls.Add(BuildOverlaySettingsCard(), 0, 2);
-        root.Controls.Add(BuildSessionDefaultsCard(), 0, 3);
-        root.Controls.Add(BuildReadinessCard(), 0, 4);
-        root.Controls.Add(BuildBoostTweaksCard(), 0, 5);
-        root.Controls.Add(safetyCard, 0, 6);
-        root.Controls.Add(AppTheme.CreateSectionTitle("Available Power Plans"), 0, 7);
-        root.Controls.Add(_powerPlanList, 0, 8);
+        var actionsCard = new CardPanel
+        {
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            FillColor = AppTheme.Surface,
+            BorderColor = AppTheme.Border,
+            CornerRadius = 20,
+            EnableSpotlight = false,
+            Margin = new Padding(0, 6, 0, 16),
+            InnerPadding = new Padding(22, 24, 22, 20)
+        };
+        var actionsLayout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            ColumnCount = 1,
+            RowCount = 3,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            BackColor = AppTheme.Surface
+        };
+        actionsLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        actionsLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        actionsLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        actionsLayout.Controls.Add(new Label
+        {
+            Text = "Tools Control Center",
+            AutoSize = true,
+            Font = AppTheme.TitleFont(16f),
+            ForeColor = AppTheme.TextPrimary
+        }, 0, 0);
+        actionsLayout.Controls.Add(new Label
+        {
+            Text = "Everything here is organized for fast setup, safe tuning, and easy previews. Start with a preset if you're new, then refine only the modules you care about.",
+            AutoSize = true,
+            MaximumSize = new Size(1040, 0),
+            Font = AppTheme.BodyFont(9.6f),
+            ForeColor = AppTheme.TextSecondary,
+            Margin = new Padding(0, 6, 0, 12)
+        }, 0, 1);
+        actionsLayout.Controls.Add(buttonFlow, 0, 2);
+        actionsCard.Controls.Add(actionsLayout);
+
+        var wizardCard = BuildQuickSetupWizardCard();
+        wizardCard.Dock = DockStyle.Fill;
+        var previewCard = BuildToolsPreviewCard();
+        previewCard.Dock = DockStyle.Fill;
+        var themeCard = BuildThemeSettingsCard();
+        var overlayCard = BuildOverlaySettingsCard();
+        var defaultsCard = BuildSessionDefaultsCard();
+        var readinessCard = BuildReadinessCard();
+        var tweaksCard = BuildBoostTweaksCard();
+
+        var powerPlansCard = new CardPanel
+        {
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            FillColor = AppTheme.Surface,
+            BorderColor = AppTheme.Border,
+            CornerRadius = 18,
+            EnableSpotlight = false,
+            Margin = new Padding(0, 0, 0, 14),
+            InnerPadding = new Padding(18)
+        };
+        var powerPlansLayout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            ColumnCount = 1,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            BackColor = AppTheme.Surface
+        };
+        powerPlansLayout.Controls.Add(new Label
+        {
+            Text = "Power Plan Browser",
+            AutoSize = true,
+            Font = AppTheme.TitleFont(14f),
+            ForeColor = AppTheme.TextPrimary
+        }, 0, 0);
+        powerPlansLayout.Controls.Add(new Label
+        {
+            Text = "This is the live Windows power-plan list CloudFrame can switch between for universal boosts and saved profiles.",
+            AutoSize = true,
+            MaximumSize = new Size(920, 0),
+            Font = AppTheme.BodyFont(9.5f),
+            ForeColor = AppTheme.TextSecondary,
+            Margin = new Padding(0, 6, 0, 12)
+        }, 0, 1);
+        powerPlansLayout.Controls.Add(_powerPlanList, 0, 2);
+        powerPlansCard.Controls.Add(powerPlansLayout);
+
+        var toolStack = new TableLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            ColumnCount = 1,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            BackColor = AppTheme.Canvas
+        };
+        toolStack.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        toolStack.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        toolStack.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        toolStack.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        toolStack.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        toolStack.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        toolStack.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        toolStack.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        toolStack.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        toolStack.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+
+        toolStack.Controls.Add(wizardCard, 0, 0);
+        toolStack.Controls.Add(previewCard, 0, 1);
+        toolStack.Controls.Add(themeCard, 0, 2);
+        toolStack.Controls.Add(overlayCard, 0, 3);
+        toolStack.Controls.Add(defaultsCard, 0, 4);
+        toolStack.Controls.Add(tweaksCard, 0, 5);
+        toolStack.Controls.Add(readinessCard, 0, 6);
+        toolStack.Controls.Add(safetyCard, 0, 7);
+        toolStack.Controls.Add(powerPlansCard, 0, 8);
+
+        root.Controls.Add(actionsCard, 0, 0);
+        root.Controls.Add(toolStack, 0, 1);
+
+        void syncToolsLayout()
+        {
+            var availableWidth = Math.Max(860, scrollHost.ClientSize.Width - 8);
+            var cardWidth = Math.Max(760, availableWidth - 8);
+            var actionWrapWidth = Math.Max(720, cardWidth - 44);
+
+            root.MaximumSize = new Size(availableWidth, 0);
+            root.Width = availableWidth;
+            toolStack.MaximumSize = new Size(availableWidth, 0);
+            toolStack.Width = availableWidth;
+            actionsCard.MaximumSize = new Size(cardWidth, 0);
+            actionsCard.Width = cardWidth;
+            buttonFlow.MaximumSize = new Size(actionWrapWidth, 0);
+
+            wizardCard.MaximumSize = new Size(cardWidth, 0);
+            wizardCard.Width = cardWidth;
+            previewCard.MaximumSize = new Size(cardWidth, 0);
+            previewCard.Width = cardWidth;
+            themeCard.MaximumSize = new Size(cardWidth, 0);
+            themeCard.Width = cardWidth;
+            overlayCard.MaximumSize = new Size(cardWidth, 0);
+            overlayCard.Width = cardWidth;
+            defaultsCard.MaximumSize = new Size(cardWidth, 0);
+            defaultsCard.Width = cardWidth;
+            tweaksCard.MaximumSize = new Size(cardWidth, 0);
+            tweaksCard.Width = cardWidth;
+            readinessCard.MaximumSize = new Size(cardWidth, 0);
+            readinessCard.Width = cardWidth;
+            safetyCard.MaximumSize = new Size(cardWidth, 0);
+            safetyCard.Width = cardWidth;
+            powerPlansCard.MaximumSize = new Size(cardWidth, 0);
+            powerPlansCard.Width = cardWidth;
+        }
+
+        scrollHost.Resize += (_, _) => syncToolsLayout();
+        syncToolsLayout();
 
         scrollHost.Controls.Add(root);
         tab.Controls.Add(scrollHost);
+        RequestToolsUiRefresh();
         return tab;
     }
 
@@ -1525,6 +1869,7 @@ internal sealed class MainForm : Form
             FillColor = AppTheme.Surface,
             BorderColor = AppTheme.Border,
             CornerRadius = 18,
+            EnableSpotlight = false,
             Margin = new Padding(0, 0, 0, 14),
             InnerPadding = new Padding(18)
         };
@@ -1587,6 +1932,232 @@ internal sealed class MainForm : Form
         flow.Controls.Add(_trayModeLabel);
 
         layout.Controls.Add(flow, 0, 2);
+        card.Controls.Add(layout);
+        return card;
+    }
+
+    private CardPanel BuildQuickSetupWizardCard()
+    {
+        var card = new CardPanel
+        {
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            FillColor = AppTheme.Surface,
+            BorderColor = AppTheme.Border,
+            CornerRadius = 20,
+            EnableSpotlight = false,
+            Margin = new Padding(0, 0, 12, 14),
+            InnerPadding = new Padding(18)
+        };
+
+        var layout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            ColumnCount = 1,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            BackColor = AppTheme.Surface
+        };
+
+        layout.Controls.Add(new Label
+        {
+            Text = "Quick Setup Wizard",
+            AutoSize = true,
+            Font = AppTheme.TitleFont(14f),
+            ForeColor = AppTheme.TextPrimary
+        }, 0, 0);
+        layout.Controls.Add(new Label
+        {
+            Text = "New here? Pick a starter mode and CloudFrame will configure the most important tools in under a minute.",
+            AutoSize = true,
+            MaximumSize = new Size(480, 0),
+            Font = AppTheme.BodyFont(9.5f),
+            ForeColor = AppTheme.TextSecondary,
+            Margin = new Padding(0, 6, 0, 12)
+        }, 0, 1);
+
+        var presetFlow = new FlowLayoutPanel
+        {
+            AutoSize = true,
+            WrapContents = true,
+            BackColor = AppTheme.Surface,
+            Margin = new Padding(0, 0, 0, 10)
+        };
+
+        Button MakePresetButton(string title, string tip, Action apply, bool primary = false)
+        {
+            var button = AppTheme.CreateButton(title, primary: primary, width: 138);
+            var tooltip = new ToolTip();
+            tooltip.SetToolTip(button, tip);
+            button.Click += (_, _) =>
+            {
+                apply();
+                SaveSettings();
+                ApplyMonitoringMode();
+                SyncBoostControlState();
+                SyncOverlayStudioControls();
+                UpdateDashboardCards();
+                RequestToolsUiRefresh();
+                _logger.Log($"Applied Tools preset '{title}'.");
+            };
+            return button;
+        }
+
+        presetFlow.Controls.Add(MakePresetButton(
+            "Balanced",
+            "A safe default for most gamers: polished visuals, regular update checks, balanced monitoring, and recurring maintenance.",
+            () => ApplyToolsPreset(AppThemePreset.Graphite, OverlayProfilePreset.Competitive, MonitoringMode.Balanced, true, true, true, true),
+            primary: true));
+        presetFlow.Controls.Add(MakePresetButton(
+            "Performance",
+            "Leans harder into gaming mode: stronger monitoring, maintenance, background memory priority, and tray-ready behavior.",
+            () => ApplyToolsPreset(AppThemePreset.Midnight, OverlayProfilePreset.FullStats, MonitoringMode.Detailed, true, true, true, true)));
+        presetFlow.Controls.Add(MakePresetButton(
+            "Minimalist",
+            "Keeps the shell lighter and simpler: minimal overlay, low-overhead monitoring, and fewer always-on helpers.",
+            () => ApplyToolsPreset(AppThemePreset.Frost, OverlayProfilePreset.Minimal, MonitoringMode.Minimal, true, false, false, false)));
+
+        var helperRow = new FlowLayoutPanel
+        {
+            AutoSize = true,
+            WrapContents = true,
+            BackColor = AppTheme.Surface
+        };
+        var starterButton = AppTheme.CreateButton("Run First-Run Guide", width: 164);
+        starterButton.Click += (_, _) => MaybeRunFirstRunSetup();
+        var helpButton = AppTheme.CreateButton("?", width: 42);
+        helpButton.Click += (_, _) => ShowToolsHelp(
+            "Quick Setup Wizard",
+            "Balanced keeps things safe and polished, Performance turns on more live visibility and maintenance, and Minimalist trims visual and monitoring overhead for users who just want the essentials.");
+        helperRow.Controls.Add(starterButton);
+        helperRow.Controls.Add(helpButton);
+
+        layout.Controls.Add(presetFlow, 0, 2);
+        layout.Controls.Add(helperRow, 0, 3);
+        card.Controls.Add(layout);
+        return card;
+    }
+
+    private CardPanel BuildToolsPreviewCard()
+    {
+        var card = new CardPanel
+        {
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            FillColor = AppTheme.Surface,
+            BorderColor = AppTheme.Border,
+            CornerRadius = 20,
+            EnableSpotlight = false,
+            Margin = new Padding(12, 0, 0, 14),
+            InnerPadding = new Padding(18)
+        };
+
+        var layout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            ColumnCount = 1,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            BackColor = AppTheme.Surface
+        };
+
+        layout.Controls.Add(new Label
+        {
+            Text = "Live Preview Pane",
+            AutoSize = true,
+            Font = AppTheme.TitleFont(14f),
+            ForeColor = AppTheme.TextPrimary
+        }, 0, 0);
+        layout.Controls.Add(new Label
+        {
+            Text = "This gives beginners a quick read on how the current Tools configuration will feel before they dive into every module.",
+            AutoSize = true,
+            MaximumSize = new Size(480, 0),
+            Font = AppTheme.BodyFont(9.5f),
+            ForeColor = AppTheme.TextSecondary,
+            Margin = new Padding(0, 6, 0, 12)
+        }, 0, 1);
+
+        var previewSurface = new CardPanel
+        {
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            FillColor = AppTheme.SurfaceAlt,
+            BorderColor = AppTheme.AccentStrong,
+            CornerRadius = 18,
+            EnableSpotlight = false,
+            Padding = new Padding(16),
+            Margin = new Padding(0, 0, 0, 10)
+        };
+
+        var previewLayout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            ColumnCount = 2,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            BackColor = AppTheme.SurfaceAlt
+        };
+        previewLayout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        previewLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+
+        Label CreatePreviewValue()
+        {
+            return new Label
+            {
+                AutoSize = true,
+                MaximumSize = new Size(320, 0),
+                Font = AppTheme.BodyFont(9.8f),
+                ForeColor = AppTheme.TextPrimary,
+                BackColor = AppTheme.SurfaceAlt,
+                Margin = new Padding(0, 0, 0, 8)
+            };
+        }
+
+        void AddRow(string label, Label value, int row)
+        {
+            previewLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            previewLayout.Controls.Add(new Label
+            {
+                Text = label,
+                AutoSize = true,
+                Font = AppTheme.CaptionFont(9.2f),
+                ForeColor = AppTheme.TextSecondary,
+                BackColor = AppTheme.SurfaceAlt,
+                Margin = new Padding(0, 0, 14, 8)
+            }, 0, row);
+            previewLayout.Controls.Add(value, 1, row);
+        }
+
+        _toolsPreviewThemeLabel = CreatePreviewValue();
+        _toolsPreviewOverlayLabel = CreatePreviewValue();
+        _toolsPreviewMonitoringLabel = CreatePreviewValue();
+        _toolsPreviewDefaultsLabel = CreatePreviewValue();
+
+        AddRow("Theme", _toolsPreviewThemeLabel, 0);
+        AddRow("Overlay", _toolsPreviewOverlayLabel, 1);
+        AddRow("Monitoring", _toolsPreviewMonitoringLabel, 2);
+        AddRow("Defaults", _toolsPreviewDefaultsLabel, 3);
+
+        previewSurface.Controls.Add(previewLayout);
+
+        var helperFlow = new FlowLayoutPanel
+        {
+            AutoSize = true,
+            WrapContents = true,
+            BackColor = AppTheme.Surface
+        };
+        var explainButton = AppTheme.CreateButton("What do these mean?", width: 162);
+        explainButton.Click += (_, _) => ShowToolsHelp(
+            "Tools Preview",
+            "Theme affects the app shell, Overlay affects the on-screen HUD, Monitoring controls telemetry intensity, and Defaults shape the universal Boost Now flow.");
+        helperFlow.Controls.Add(explainButton);
+
+        layout.Controls.Add(previewSurface, 0, 2);
+        layout.Controls.Add(helperFlow, 0, 3);
         card.Controls.Add(layout);
         return card;
     }
@@ -1741,6 +2312,7 @@ internal sealed class MainForm : Form
             FillColor = AppTheme.Surface,
             BorderColor = AppTheme.Border,
             CornerRadius = 18,
+            EnableSpotlight = false,
             Margin = new Padding(0, 0, 0, 14),
             InnerPadding = new Padding(18)
         };
@@ -1760,13 +2332,26 @@ internal sealed class MainForm : Form
             layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         }
 
-        layout.Controls.Add(new Label
+        var headerFlow = new FlowLayoutPanel
+        {
+            AutoSize = true,
+            WrapContents = false,
+            BackColor = AppTheme.Surface
+        };
+        headerFlow.Controls.Add(new Label
         {
             Text = "Overlay Studio",
             AutoSize = true,
             Font = AppTheme.TitleFont(14f),
             ForeColor = AppTheme.TextPrimary
-        }, 0, 0);
+        });
+        var helpButton = AppTheme.CreateButton("?", width: 42);
+        helpButton.Margin = new Padding(10, 0, 0, 0);
+        helpButton.Click += (_, _) => ShowToolsHelp(
+            "Overlay Studio",
+            "Use Competitive or Full Stats for fuller telemetry, Minimal for a cleaner stream-friendly HUD, and Custom when you want to tune colors and font yourself.");
+        headerFlow.Controls.Add(helpButton);
+        layout.Controls.Add(headerFlow, 0, 0);
 
         layout.Controls.Add(new Label
         {
@@ -1845,6 +2430,7 @@ internal sealed class MainForm : Form
                 apply(checkBox.Checked);
                 MarkOverlayPresetAsCustom();
                 SaveSettings();
+                RefreshToolsPreviewCard();
                 RecreateOverlay();
             };
 
@@ -1873,6 +2459,7 @@ internal sealed class MainForm : Form
             applyColor(selected);
             MarkOverlayPresetAsCustom();
             SaveSettings();
+            RefreshToolsPreviewCard();
             RecreateOverlay();
             _logger.Log($"{title} updated.");
         }
@@ -1918,6 +2505,7 @@ internal sealed class MainForm : Form
             _settings.OverlayStyle = _overlayStyleComboBox.SelectedIndex == 1 ? OverlayStyle.Minimal : OverlayStyle.Card;
             MarkOverlayPresetAsCustom();
             SaveSettings();
+            RefreshToolsPreviewCard();
             RecreateOverlay();
         };
 
@@ -1944,6 +2532,7 @@ internal sealed class MainForm : Form
             _settings.OverlayFontPreset = preset;
             MarkOverlayPresetAsCustom();
             SaveSettings();
+            RefreshToolsPreviewCard();
             RecreateOverlay();
         };
 
@@ -2035,6 +2624,7 @@ internal sealed class MainForm : Form
             FillColor = AppTheme.Surface,
             BorderColor = AppTheme.Border,
             CornerRadius = 18,
+            EnableSpotlight = false,
             Margin = new Padding(0, 0, 0, 14),
             InnerPadding = new Padding(18)
         };
@@ -2043,7 +2633,7 @@ internal sealed class MainForm : Form
         {
             Dock = DockStyle.Top,
             ColumnCount = 1,
-            RowCount = 3,
+            RowCount = 4,
             BackColor = AppTheme.Surface,
             AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink
@@ -2051,14 +2641,28 @@ internal sealed class MainForm : Form
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
-        layout.Controls.Add(new Label
+        var headerFlow = new FlowLayoutPanel
+        {
+            AutoSize = true,
+            WrapContents = false,
+            BackColor = AppTheme.Surface
+        };
+        headerFlow.Controls.Add(new Label
         {
             Text = "Theme Studio",
             AutoSize = true,
             Font = AppTheme.TitleFont(14f),
             ForeColor = AppTheme.TextPrimary
-        }, 0, 0);
+        });
+        var helpButton = AppTheme.CreateButton("?", width: 42);
+        helpButton.Margin = new Padding(10, 0, 0, 0);
+        helpButton.Click += (_, _) => ShowToolsHelp(
+            "Theme Studio",
+            "Themes recolor the CloudFrame shell. Graphite is the balanced default, Midnight is deeper and more dramatic, Ember is warmer, and Frost is lighter and cooler.");
+        headerFlow.Controls.Add(helpButton);
+        layout.Controls.Add(headerFlow, 0, 0);
         layout.Controls.Add(new Label
         {
             Text = "Pick a shell theme for CloudFrame. Restart to apply the full app chrome cleanly so every surface, card, and tab stays consistent.",
@@ -2074,7 +2678,9 @@ internal sealed class MainForm : Form
             AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
             WrapContents = true,
-            BackColor = AppTheme.Surface
+            BackColor = AppTheme.Surface,
+            MaximumSize = new Size(1080, 0),
+            Margin = new Padding(0)
         };
 
         flow.Controls.Add(new Label
@@ -2108,6 +2714,7 @@ internal sealed class MainForm : Form
 
             _settings.ThemePreset = preset;
             SaveSettings();
+            RefreshToolsPreviewCard();
 
             if (MessageBox.Show(
                     this,
@@ -2137,6 +2744,7 @@ internal sealed class MainForm : Form
             FillColor = AppTheme.Surface,
             BorderColor = AppTheme.Border,
             CornerRadius = 18,
+            EnableSpotlight = false,
             Margin = new Padding(0, 0, 0, 14),
             InnerPadding = new Padding(18)
         };
@@ -2153,13 +2761,26 @@ internal sealed class MainForm : Form
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
-        layout.Controls.Add(new Label
+        var headerFlow = new FlowLayoutPanel
+        {
+            AutoSize = true,
+            WrapContents = false,
+            BackColor = AppTheme.Surface
+        };
+        headerFlow.Controls.Add(new Label
         {
             Text = "Session Defaults",
             AutoSize = true,
             Font = AppTheme.TitleFont(14f),
             ForeColor = AppTheme.TextPrimary
-        }, 0, 0);
+        });
+        var helpButton = AppTheme.CreateButton("?", width: 42);
+        helpButton.Margin = new Padding(10, 0, 0, 0);
+        helpButton.Click += (_, _) => ShowToolsHelp(
+            "Session Defaults",
+            "These are the global defaults CloudFrame uses for Boost Now and the general launch experience. Saved profile settings still take priority over these.");
+        headerFlow.Controls.Add(helpButton);
+        layout.Controls.Add(headerFlow, 0, 0);
         layout.Controls.Add(new Label
         {
             Text = "These shape the universal Boost Now flow and the overall launch experience. Profile-specific settings still win when you edit a saved game.",
@@ -2196,7 +2817,7 @@ internal sealed class MainForm : Form
                 onChange(cb.Checked);
                 SaveSettings();
                 SyncBoostControlState();
-                UpdateToolsSelectionInfo();
+                RequestToolsUiRefresh();
                 UpdateDashboardCards();
             };
             return cb;
@@ -2253,6 +2874,7 @@ internal sealed class MainForm : Form
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
             WrapContents = true,
             BackColor = AppTheme.Surface,
+            MaximumSize = new Size(1080, 0),
             Margin = new Padding(0, 10, 0, 0)
         };
         var checkUpdatesButton = AppTheme.CreateButton("Check for Updates Now", width: 182);
@@ -2287,6 +2909,7 @@ internal sealed class MainForm : Form
             _settings.MonitoringMode = mode;
             SaveSettings();
             ApplyMonitoringMode();
+            RequestToolsUiRefresh();
             _logger.Log($"Monitoring mode set to {mode}.");
         };
         actionsFlow.Controls.Add(_monitoringModeComboBox);
@@ -2316,6 +2939,7 @@ internal sealed class MainForm : Form
             FillColor    = AppTheme.Surface,
             BorderColor  = AppTheme.Border,
             CornerRadius = 18,
+            EnableSpotlight = false,
             Margin       = new Padding(0, 0, 0, 14),
             InnerPadding = new Padding(18)
         };
@@ -2327,11 +2951,24 @@ internal sealed class MainForm : Form
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
-        layout.Controls.Add(new Label
+        var headerFlow = new FlowLayoutPanel
+        {
+            AutoSize = true,
+            WrapContents = false,
+            BackColor = AppTheme.Surface
+        };
+        headerFlow.Controls.Add(new Label
         {
             Text = "Boost Engine", AutoSize = true,
             Font = AppTheme.TitleFont(14f), ForeColor = AppTheme.TextPrimary
-        }, 0, 0);
+        });
+        var helpButton = AppTheme.CreateButton("?", width: 42);
+        helpButton.Margin = new Padding(10, 0, 0, 0);
+        helpButton.Click += (_, _) => ShowToolsHelp(
+            "Boost Engine",
+            "These are the deeper system-side switches behind CloudFrame's presets. They stay reversible and should only be adjusted if you want to tune how aggressive the boost engine feels.");
+        headerFlow.Controls.Add(helpButton);
+        layout.Controls.Add(headerFlow, 0, 0);
         layout.Controls.Add(new Label
         {
             Text = "System-side tuning applied during boost sessions and reversed on restore. These are the deeper engine switches behind the presets.",
@@ -2406,25 +3043,28 @@ internal sealed class MainForm : Form
     {
         _logger.Log("CloudFrame main window shown.");
         UpdateStatusLabels();
-        await LoadPowerPlansAsync();
         UpdateShaderCacheLabel();
         await _boostCoordinator.RecoverPendingSessionAsync(_settings.Profiles);
         ToggleOverlay(_overlayToggleCheckBox.Checked);
+        _ = Task.Run(LoadPowerPlansAsync);
 
-        await Task.Delay(700);
+        await Task.Delay(120);
         if (IsDisposed || Disposing)
         {
             return;
         }
 
         _startupReady = true;
+        UpdateAnimatedUiState();
         UpdateFpsTrackingTarget();
         _telemetryTimer.Start();
         ScheduleTelemetryRefresh();
         _logger.Log("CloudFrame startup warmup complete.");
-
-        MaybeRunFirstRunSetup();
-        _ = CheckForUpdatesAsync(showUpToDateMessage: false);
+        BeginInvoke(new Action(() =>
+        {
+            MaybeRunFirstRunSetup();
+            _ = CheckForUpdatesAsync(showUpToDateMessage: false);
+        }));
     }
 
     private void HandleWindowResize()
@@ -2484,11 +3124,16 @@ internal sealed class MainForm : Form
         _powerPlans.AddRange(await _powerPlanService.GetPlansAsync());
         _powerPlanList.DataSource = null;
         _powerPlanList.DataSource = _powerPlans;
-        UpdateStatusLabels();
+        RequestToolsUiRefresh();
     }
 
     private void BindProfiles()
     {
+        if (_profilesList is null || _profileCountLabel is null)
+        {
+            return;
+        }
+
         var selectedProfileId = SelectedProfile?.Id;
         _profilesList.DataSource = null;
         _profilesList.DisplayMember = nameof(GameProfile.Name);
@@ -2531,6 +3176,11 @@ internal sealed class MainForm : Form
     {
         get
         {
+            if (_profilesList is null)
+            {
+                return null;
+            }
+
             var profile = _profilesList.SelectedItem as GameProfile;
             return profile?.Id == "__none__" ? null : profile;
         }
@@ -2609,6 +3259,157 @@ internal sealed class MainForm : Form
         {
             _profilesList.SelectedIndex = matchingIndex;
         }
+    }
+
+    private void RefreshProfileStudioCard()
+    {
+        if (_profileSnapshotCard is null)
+        {
+            return;
+        }
+
+        if (!IsProfilesTabActive())
+        {
+            _profileStudioDirty = true;
+            return;
+        }
+
+        RefreshProfileStudioCardCore();
+    }
+
+    private void RefreshProfileStudioCardCore()
+    {
+        if (_profileSnapshotCard is null)
+        {
+            return;
+        }
+
+        _profileSnapshotCard.SuspendLayout();
+        var profile = SelectedProfile;
+        _profileSnapshotCard.SetProfile(profile);
+        _profileSnapshotCard.SetContext(
+            _lastSessionReport,
+            profile is null ? null : GetStoredRecommendationMemory(profile),
+            _latestTelemetry,
+            _lastLiveSession is not null,
+            _settings.EnableUpdateChecks);
+        _profileSnapshotCard.ResumeLayout(true);
+        _profileStudioDirty = false;
+    }
+
+    private void UpdateAnimatedUiState()
+    {
+        var selectedTabText = _mainTabs?.SelectedTab?.Text ?? string.Empty;
+        var dashboardActive = string.Equals(selectedTabText, "Dashboard", StringComparison.OrdinalIgnoreCase);
+        var profilesActive = string.Equals(selectedTabText, "Profiles", StringComparison.OrdinalIgnoreCase);
+        var toolsActive = string.Equals(selectedTabText, "Tools", StringComparison.OrdinalIgnoreCase);
+        _dashboardBackdropPanel?.SetAnimationEnabled(dashboardActive);
+        _profileSnapshotCard?.SetAnimationEnabled(profilesActive);
+        if (profilesActive && _profileStudioDirty)
+        {
+            BeginInvoke(new Action(RefreshProfileStudioCardCore));
+        }
+        if (toolsActive && _toolsUiDirty)
+        {
+            BeginInvoke(new Action(RefreshToolsUiCore));
+        }
+    }
+
+    private void RequestProfileStudioRefresh()
+    {
+        _profileStudioDirty = true;
+        if (IsProfilesTabActive())
+        {
+            RefreshProfileStudioCardCore();
+        }
+    }
+
+    private bool IsProfilesTabActive()
+        => string.Equals(_mainTabs?.SelectedTab?.Text, "Profiles", StringComparison.OrdinalIgnoreCase);
+
+    private void RefreshToolsUiCore()
+    {
+        UpdateToolsSelectionInfo();
+        UpdateReadinessDiagnostics();
+        RefreshToolsPreviewCardCore();
+        _toolsUiDirty = false;
+    }
+
+    private void RequestToolsUiRefresh()
+    {
+        _toolsUiDirty = true;
+        if (IsToolsTabActive())
+        {
+            RefreshToolsUiCore();
+        }
+    }
+
+    private bool IsToolsTabActive()
+        => string.Equals(_mainTabs?.SelectedTab?.Text, "Tools", StringComparison.OrdinalIgnoreCase);
+
+    private void ApplyToolsPreset(
+        AppThemePreset themePreset,
+        OverlayProfilePreset overlayPreset,
+        MonitoringMode monitoringMode,
+        bool updateChecks,
+        bool recurringMaintenance,
+        bool memoryPriority,
+        bool ecoQos)
+    {
+        _settings.ThemePreset = themePreset;
+        _settings.EnableUpdateChecks = updateChecks;
+        _settings.MonitoringMode = monitoringMode;
+        _settings.UniversalEnableRecurringMaintenance = recurringMaintenance;
+        _settings.UniversalUseBackgroundMemoryPriority = memoryPriority;
+        _settings.UniversalUseBackgroundEcoQos = ecoQos;
+
+        if (_themePresetComboBox is not null)
+        {
+            _themePresetComboBox.SelectedItem = themePreset;
+        }
+
+        if (_monitoringModeComboBox is not null)
+        {
+            _monitoringModeComboBox.SelectedItem = monitoringMode;
+        }
+
+        ApplyOverlayProfilePreset(overlayPreset);
+    }
+
+    private void RefreshToolsPreviewCard()
+    {
+        _toolsUiDirty = true;
+        if (IsToolsTabActive())
+        {
+            RefreshToolsPreviewCardCore();
+        }
+    }
+
+    private void RefreshToolsPreviewCardCore()
+    {
+        if (_toolsPreviewThemeLabel is null)
+        {
+            return;
+        }
+
+        _toolsPreviewThemeLabel.Text = $"{_settings.ThemePreset} shell palette";
+        _toolsPreviewOverlayLabel.Text = $"{_settings.OverlayProfilePreset} / {_settings.OverlayStyle} / {_settings.OverlayFontPreset}";
+        _toolsPreviewMonitoringLabel.Text = $"{_settings.MonitoringMode} telemetry";
+        _toolsPreviewDefaultsLabel.Text = $"{(_settings.EnableUpdateChecks ? "Auto-update checks on" : "Manual updates")} | {(_settings.UniversalEnableRecurringMaintenance ? "maintenance on" : "maintenance off")} | {(_settings.MinimizeToTray ? "tray mode ready" : "taskbar mode")}";
+    }
+
+    private void UpdateDashboardAdvancedMode()
+    {
+        var advanced = _advancedViewCheckBox?.Checked == true;
+        if (_dashboardGaugePanel is not null) _dashboardGaugePanel.Visible = advanced;
+        if (_dashboardSessionReportPanel is not null) _dashboardSessionReportPanel.Visible = advanced;
+        if (_dashboardRecommendationPanel is not null) _dashboardRecommendationPanel.Visible = advanced;
+        if (_dashboardLogGroup is not null) _dashboardLogGroup.Visible = advanced;
+    }
+
+    private void ShowToolsHelp(string title, string body)
+    {
+        MessageBox.Show(this, body, title, MessageBoxButtons.OK, MessageBoxIcon.Information);
     }
 
     private void RemoveSelectedProfile()
@@ -3260,9 +4061,9 @@ internal sealed class MainForm : Form
             : $"Boost Preset: {selectedProfile.BoostPreset}";
         SyncBoostControlState();
         SyncPresetCardSelection();
-        UpdateToolsSelectionInfo();
+        RequestProfileStudioRefresh();
         UpdateDashboardCards();
-        UpdateReadinessDiagnostics();
+        RequestToolsUiRefresh();
     }
 
     private void UpdateReadinessDiagnostics()
@@ -3372,25 +4173,56 @@ internal sealed class MainForm : Form
             return;
         }
 
-        // Keep PresentMon running in global capture mode whenever the overlay
-        // toggle is on — this enables foreground-window FPS even without a boost.
-        var overlayOn = _overlayToggleCheckBox?.Checked == true;
-        _presentMonFpsService.SetForegroundMode(overlayOn);
-
         var session = _boostCoordinator.ActiveSession;
         if (session is not null && !session.RecoveryState.IsPreLaunchBoost)
         {
-            _presentMonFpsService.SetTarget(
-                session.RecoveryState.GameProcessId,
-                session.Profile.Name,
-                session.Profile.ExecutableName,
-                session.AntiCheatStatus.UseCompatibilityMode,
-                session.AntiCheatStatus.UseCompatibilityMode
-                    ? $"{session.AntiCheatStatus.DisplayName} compatibility mode keeps FPS capture disabled for safety."
-                    : null);
+            ApplySessionFpsTarget(session);
             return;
         }
 
+        if (_overlayToggleCheckBox?.Checked == true && TryApplyForegroundGameTarget())
+        {
+            return;
+        }
+
+        ClearFpsTarget();
+    }
+
+    private void ApplySessionFpsTarget(ActiveBoostSession session)
+    {
+        _presentMonFpsService.SetForegroundMode(false);
+        _presentMonFpsService.SetTarget(
+            session.RecoveryState.GameProcessId,
+            session.Profile.Name,
+            session.Profile.ExecutableName,
+            session.AntiCheatStatus.UseCompatibilityMode,
+            session.AntiCheatStatus.UseCompatibilityMode
+                ? $"{session.AntiCheatStatus.DisplayName} compatibility mode keeps FPS capture disabled for safety."
+                : null);
+    }
+
+    private bool TryApplyForegroundGameTarget()
+    {
+        var foregroundTarget = ResolveForegroundFpsTarget();
+        if (foregroundTarget is null || !foregroundTarget.IsProfiledGame)
+        {
+            return false;
+        }
+
+        _presentMonFpsService.SetForegroundMode(false);
+        _presentMonFpsService.SetTarget(
+            foregroundTarget.ProcessId,
+            foregroundTarget.DisplayName,
+            foregroundTarget.MatchName,
+            false,
+            null);
+
+        return true;
+    }
+
+    private void ClearFpsTarget()
+    {
+        _presentMonFpsService.SetForegroundMode(false);
         _presentMonFpsService.SetTarget(null, null, null, false, null);
     }
 
@@ -3768,6 +4600,7 @@ internal sealed class MainForm : Form
         };
 
         SaveRecommendationMemory(session.Profile, _currentRecommendation);
+        RequestProfileStudioRefresh();
     }
 
     private void ApplyCurrentRecommendation()
@@ -3792,6 +4625,7 @@ internal sealed class MainForm : Form
         SyncBoostControlState();
         SyncPresetCardSelection();
         UpdateToolsSelectionInfo();
+        RequestProfileStudioRefresh();
         UpdateDashboardCards();
         _logger.Log($"Applied tuning recommendation to '{profile.Name}'.");
     }
@@ -3852,6 +4686,21 @@ internal sealed class MainForm : Form
             memory.CanAutoApply);
     }
 
+    private GameRecommendationMemory? GetStoredRecommendationMemory(GameProfile profile)
+    {
+        return _settings.RecommendationMemories
+            .Where(item =>
+                string.Equals(item.ProfileId, profile.Id, StringComparison.OrdinalIgnoreCase) ||
+                (!string.IsNullOrWhiteSpace(item.ExecutablePath) &&
+                 string.Equals(item.ExecutablePath, profile.ExecutablePath, StringComparison.OrdinalIgnoreCase)) ||
+                (!string.IsNullOrWhiteSpace(item.ExecutableName) &&
+                 string.Equals(item.ExecutableName, profile.ExecutableName, StringComparison.OrdinalIgnoreCase)))
+            .OrderByDescending(item => item.UpdatedAt)
+            .FirstOrDefault();
+    }
+
+    private int _statusLabelThrottleCounter;
+
     private void ScheduleTelemetryRefresh()
     {
         if (!_startupReady || IsDisposed || Disposing)
@@ -3898,36 +4747,9 @@ internal sealed class MainForm : Form
                 await cpuTask.ConfigureAwait(false);
             }
 
-            // When no boost session is active, fall back to tracking whichever
-            // non-system window currently has focus so the overlay always works.
-            // We keep the last known valid target so clicking the desktop or
-            // taskbar on another monitor doesn't instantly hide the overlay.
             if (!hasLiveSession && _overlayToggleCheckBox?.Checked == true)
             {
-                var resolved = ResolveForegroundFpsTarget();
-                if (resolved is not null)
-                {
-                    _lastKnownForegroundTarget = resolved;
-                    _fpsBecameNullAt = DateTimeOffset.MinValue; // reset stale timer when we resolve a real window
-                }
-
-                // Track how long FPS has been absent; only evict the last known target
-                // once it has been consistently null for 10+ seconds (game closed/crashed).
-                if (_presentMonFpsService.LatestFps is null)
-                {
-                    if (_fpsBecameNullAt == DateTimeOffset.MinValue)
-                        _fpsBecameNullAt = DateTimeOffset.UtcNow;
-
-                    if (_lastKnownForegroundTarget is not null
-                        && DateTimeOffset.UtcNow - _fpsBecameNullAt > TimeSpan.FromSeconds(10))
-                    {
-                        _lastKnownForegroundTarget = null;
-                    }
-                }
-                else
-                {
-                    _fpsBecameNullAt = DateTimeOffset.MinValue;
-                }
+                UpdateIdleTrackingTarget();
             }
             else if (hasLiveSession)
             {
@@ -3964,16 +4786,37 @@ internal sealed class MainForm : Form
 
             if (InvokeRequired)
             {
-                BeginInvoke(() => ApplyTelemetrySnapshot(telemetry));
+                var baselineEligible = IsBaselineEligible(hasLiveSession);
+                BeginInvoke(() => ApplyTelemetrySnapshot(telemetry, baselineEligible));
                 return;
             }
 
-            ApplyTelemetrySnapshot(telemetry);
+            ApplyTelemetrySnapshot(telemetry, IsBaselineEligible(hasLiveSession));
         }
         finally
         {
             _telemetryRefreshGate.Release();
         }
+    }
+
+    private void UpdateIdleTrackingTarget()
+    {
+        var resolved = ResolveForegroundFpsTarget();
+        if (resolved is not null && resolved.IsProfiledGame)
+        {
+            _lastKnownForegroundTarget = resolved;
+        }
+        else
+        {
+            _lastKnownForegroundTarget = null;
+        }
+
+        _fpsBecameNullAt = DateTimeOffset.MinValue;
+    }
+
+    private bool IsBaselineEligible(bool hasLiveSession)
+    {
+        return hasLiveSession || _lastKnownForegroundTarget?.IsProfiledGame == true;
     }
 
     private FpsTrackingTarget? ResolveForegroundFpsTarget()
@@ -4007,14 +4850,27 @@ internal sealed class MainForm : Form
             var matchedProfile = _settings.Profiles.FirstOrDefault(profile =>
                 string.Equals(profile.ExecutablePath, executablePath, StringComparison.OrdinalIgnoreCase)
                 || string.Equals(profile.ExecutableName, process.ProcessName, StringComparison.OrdinalIgnoreCase));
+            var detectedMatch = _detectedGames.FirstOrDefault(game =>
+                game.ProcessId == process.Id
+                || game.AnchorProcessId == process.Id
+                || (!string.IsNullOrWhiteSpace(game.ExecutablePath)
+                    && string.Equals(game.ExecutablePath, executablePath, StringComparison.OrdinalIgnoreCase))
+                || string.Equals(game.ProcessName, process.ProcessName, StringComparison.OrdinalIgnoreCase));
+
+            if (matchedProfile is null && detectedMatch is null)
+            {
+                return null;
+            }
 
             return new FpsTrackingTarget
             {
                 ProcessId = process.Id,
                 ExecutablePath = executablePath,
-                MatchName = matchedProfile?.ExecutableName ?? process.ProcessName,
+                MatchName = matchedProfile?.ExecutableName ?? detectedMatch?.Profile.ExecutableName ?? process.ProcessName,
                 DisplayName = matchedProfile?.Name
-                    ?? (!string.IsNullOrWhiteSpace(title) ? title : process.ProcessName)
+                    ?? detectedMatch?.Profile.Name
+                    ?? (!string.IsNullOrWhiteSpace(title) ? title : process.ProcessName),
+                IsProfiledGame = true
             };
         }
         catch
@@ -4023,11 +4879,19 @@ internal sealed class MainForm : Form
         }
     }
 
-    private void ApplyTelemetrySnapshot(TelemetrySnapshot telemetry)
+    private void ApplyTelemetrySnapshot(TelemetrySnapshot telemetry, bool baselineEligible)
     {
         _latestTelemetry = telemetry;
-        _fpsComparisonTracker.Observe(telemetry, _boostCoordinator.ActiveSession);
+        _fpsComparisonTracker.Observe(telemetry, _boostCoordinator.ActiveSession, baselineEligible);
         _profileTuningAdvisor.Observe(telemetry, _boostCoordinator.ActiveSession);
+
+        // Throttle the heavy label/card refresh — run every 5th tick (~7–8 seconds)
+        // to avoid layout pressure and WinForms repaint thrash on every sample.
+        _statusLabelThrottleCounter++;
+        if (_statusLabelThrottleCounter % 5 == 0)
+        {
+        RequestProfileStudioRefresh();
+        }
 
         // Update live stat rings
         if (_cpuRing is not null)
@@ -4247,6 +5111,55 @@ internal sealed class MainForm : Form
             delta.HasResult
                 ? (delta.DeltaPercent ?? 0) >= 0 ? AppTheme.Success : AppTheme.Warning
                 : AppTheme.AccentStrong);
+
+        if (_dashboardSummaryLabel is not null && _dashboardSummaryDetailLabel is not null)
+        {
+            var fpsPart = _latestTelemetry.FramesPerSecond is double currentFps
+                ? $"{currentFps:0} FPS average"
+                : "FPS warming up";
+            var healthTone = session is not null
+                ? session.AntiCheatStatus.UseCompatibilityMode
+                    ? "System running safely in compatibility mode"
+                    : "System running smoothly"
+                : "System standing by";
+            _dashboardSummaryLabel.Text = $"{healthTone} — {fpsPart}";
+            _dashboardSummaryLabel.ForeColor = session?.AntiCheatStatus.UseCompatibilityMode == true
+                ? AppTheme.Warning
+                : _latestTelemetry.CpuPercent >= 90 || (_latestTelemetry.GpuPercent ?? 0) >= 97
+                    ? AppTheme.Warning
+                    : AppTheme.Success;
+            _dashboardSummaryDetailLabel.Text = session is null
+                ? "Choose a profile or use Optimize Automatically to let CloudFrame line up a safe gaming configuration."
+                : $"Selected profile: {session.Profile.Name} | CPU {_latestTelemetry.CpuPercent:0}% | GPU {(_latestTelemetry.GpuPercent ?? 0):0}% | Overlay {(_overlayToggleCheckBox?.Checked == true ? "armed" : "hidden")}";
+        }
+
+        if (_advisorLabel is not null && _advisorDetailLabel is not null)
+        {
+            if (_currentRecommendation != ProfileTuningRecommendation.Empty && !string.IsNullOrWhiteSpace(_currentRecommendation.Title))
+            {
+                _advisorLabel.Text = _currentRecommendation.Title;
+                _advisorLabel.ForeColor = _currentRecommendation.CanAutoApply ? AppTheme.Success : AppTheme.AccentSoft;
+                _advisorDetailLabel.Text = _currentRecommendation.Detail;
+            }
+            else if (_latestTelemetry.CpuPercent >= 92)
+            {
+                _advisorLabel.Text = "CPU pressure is the main limiter right now";
+                _advisorLabel.ForeColor = AppTheme.Warning;
+                _advisorDetailLabel.Text = "CloudFrame is seeing heavy CPU load. Try a stronger preset, close background browser tabs, or keep the live dashboard in Simplified mode while gaming.";
+            }
+            else if ((_latestTelemetry.GpuPercent ?? 0) >= 96)
+            {
+                _advisorLabel.Text = "This session looks GPU-bound";
+                _advisorLabel.ForeColor = AppTheme.AccentSoft;
+                _advisorDetailLabel.Text = "CloudFrame can still help with frametime stability, but the next meaningful gain is more likely to come from game settings, upscaling, or driver-level tuning.";
+            }
+            else
+            {
+                _advisorLabel.Text = "CloudFrame is ready to suggest next steps";
+                _advisorLabel.ForeColor = AppTheme.AccentSoft;
+                _advisorDetailLabel.Text = "Run a short boosted session and CloudFrame will surface recommended tuning based on real CPU, GPU, and FPS behavior.";
+            }
+        }
 
         if (_boostGauge is not null)
         {
@@ -4555,6 +5468,8 @@ internal sealed class MainForm : Form
         public required string MatchName { get; init; }
 
         public required string DisplayName { get; init; }
+
+        public bool IsProfiledGame { get; init; }
     }
 
 }
