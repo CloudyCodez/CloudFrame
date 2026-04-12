@@ -6,9 +6,15 @@ internal sealed class BoostRecoveryState
 {
     public string? ProfileId { get; set; }
 
+    public int AnchorProcessId { get; set; }
+
+    public string AnchorProcessName { get; set; } = string.Empty;
+
     public int GameProcessId { get; set; }
 
     public string GameProcessName { get; set; } = string.Empty;
+
+    public string? EngineHint { get; set; }
 
     public bool IsPreLaunchBoost { get; set; }
 

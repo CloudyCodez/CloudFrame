@@ -11,6 +11,7 @@ internal sealed class PresentMonFpsService : IDisposable
     private static readonly TimeSpan SampleFreshness = TimeSpan.FromSeconds(4);
     private static readonly TimeSpan RestartCooldown = TimeSpan.FromSeconds(3);
     private static readonly TimeSpan ForegroundPollInterval = TimeSpan.FromMilliseconds(500);
+    private static readonly TimeSpan TargetPidRefreshInterval = TimeSpan.FromSeconds(1);
     private readonly Logger _logger;
     private readonly object _sync = new();
     private readonly SemaphoreSlim _refreshSignal = new(0, int.MaxValue);
@@ -38,6 +39,8 @@ internal sealed class PresentMonFpsService : IDisposable
     private string _status = "Waiting for a boosted game";
     private string? _lastError;
     private bool _loggedFirstSample;
+    private HashSet<int> _acceptedTargetProcessIds = [];
+    private DateTimeOffset _acceptedTargetPidsSampledAt = DateTimeOffset.MinValue;
 
     // Cached foreground PID — refreshed on a slow poll so per-frame Win32 calls
     // don't race against the CSV reader and drop legitimate frames.
@@ -76,6 +79,10 @@ internal sealed class PresentMonFpsService : IDisposable
             }
         }
     }
+
+    public bool IsBackendAvailable => _presentMonPath is not null;
+
+    public string? BackendPath => _presentMonPath;
 
     public string Status
     {
@@ -149,6 +156,7 @@ internal sealed class PresentMonFpsService : IDisposable
                 _targetProcessId = processId is int validCompat && validCompat > 0 ? validCompat : null;
                 _targetProcessName = string.IsNullOrWhiteSpace(processDisplayName) ? processMatchName : processDisplayName;
                 _targetProcessMatchName = processMatchName;
+                ResetAcceptedTargetProcessIds();
                 _latestFps = null;
                 _lastSampleAt = DateTimeOffset.MinValue;
                 _lastError = null;
@@ -156,9 +164,14 @@ internal sealed class PresentMonFpsService : IDisposable
             }
             else if (processId is int validProcessId && validProcessId > 0)
             {
+                var targetChanged = _targetProcessId != validProcessId;
                 _targetProcessId = validProcessId;
                 _targetProcessName = string.IsNullOrWhiteSpace(processDisplayName) ? processMatchName : processDisplayName;
                 _targetProcessMatchName = processMatchName;
+                if (targetChanged)
+                {
+                    ResetAcceptedTargetProcessIds();
+                }
                 _lastError = null;
 
                 if (DateTimeOffset.UtcNow - _lastSampleAt > SampleFreshness || _latestFps is null)
@@ -172,6 +185,7 @@ internal sealed class PresentMonFpsService : IDisposable
                 _targetProcessId = null;
                 _targetProcessName = null;
                 _targetProcessMatchName = null;
+                ResetAcceptedTargetProcessIds();
                 _lastError = null;
                 if (!_foregroundMode)
                 {
@@ -467,12 +481,14 @@ internal sealed class PresentMonFpsService : IDisposable
                     var pid = sample.ProcessId.Value;
                     if (pid == OwnProcessId) continue;  // never show CloudFrame's own frames
 
-                    int? boostedPid;
-                    lock (_sync) { boostedPid = _targetProcessId; }
-
-                    if (boostedPid is int bpid && bpid > 0 && pid == bpid)
+                    var acceptedTargetPids = GetAcceptedTargetProcessIds();
+                    if (acceptedTargetPids.Count > 0)
                     {
-                        // Explicit boosted target — always accept.
+                        if (!acceptedTargetPids.Contains(pid))
+                        {
+                            continue;
+                        }
+
                         _lastAcceptedGamePid = pid;
                     }
                     else
@@ -616,6 +632,44 @@ internal sealed class PresentMonFpsService : IDisposable
         return _cachedForegroundPid;
     }
 
+    private HashSet<int> GetAcceptedTargetProcessIds()
+    {
+        lock (_sync)
+        {
+            if (_targetProcessId is not int targetProcessId || targetProcessId <= 0)
+            {
+                return [];
+            }
+
+            var now = DateTimeOffset.UtcNow;
+            if (now - _acceptedTargetPidsSampledAt < TargetPidRefreshInterval && _acceptedTargetProcessIds.Count > 0)
+            {
+                return _acceptedTargetProcessIds;
+            }
+
+            _acceptedTargetProcessIds = BuildAcceptedTargetProcessIds(targetProcessId);
+            _acceptedTargetPidsSampledAt = now;
+            return _acceptedTargetProcessIds;
+        }
+    }
+
+    private void ResetAcceptedTargetProcessIds()
+    {
+        _acceptedTargetProcessIds = [];
+        _acceptedTargetPidsSampledAt = DateTimeOffset.MinValue;
+    }
+
+    private static HashSet<int> BuildAcceptedTargetProcessIds(int targetProcessId)
+    {
+        var accepted = new HashSet<int> { targetProcessId };
+        foreach (var descendant in EnumerateDescendants(targetProcessId))
+        {
+            accepted.Add(descendant.ProcessId);
+        }
+
+        return accepted;
+    }
+
     private static int GetForegroundProcessId()
     {
         try
@@ -707,6 +761,7 @@ internal sealed class PresentMonFpsService : IDisposable
             _captureActive = false;
             _latestFps = null;
             _lastSampleAt = DateTimeOffset.MinValue;
+            ResetAcceptedTargetProcessIds();
             process = _presentMonProcess;
             captureCts = _captureCts;
             _presentMonProcess = null;

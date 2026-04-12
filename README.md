@@ -51,6 +51,7 @@ Published executable:
 - Running FrameBoost as administrator may improve its ability to tune processes launched with elevated permissions.
 - The app is designed around one active boosted game session at a time for safer restore behavior.
 - Settings, recovery state, and logs are stored under `%LOCALAPPDATA%\CloudsFrameBoost`.
+- CloudFrame can check `CloudyCodez/CloudFrame` releases on launch and prompt when a newer public release is available.
 - Anti-cheat detection is heuristic, not exhaustive. When CloudFrame detects common markers for Easy Anti-Cheat, BattlEye, Riot Vanguard, FACEIT Anti-Cheat, or EA AntiCheat, it skips process-priority changes and keeps the session in compatibility mode.
 - FPS capture uses PresentMon when it is available on the system. On this machine, NVIDIA FrameView's bundled `PresentMon_x64.exe` is available and can feed the overlay without injecting into the game.
 - CloudFrame also treats virtualization infrastructure as protected. It does not target virtualization drivers, and it will avoid reprioritizing common Hyper-V, WSL, VMware, VirtualBox, Parallels, and QEMU host processes.

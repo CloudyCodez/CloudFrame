@@ -83,6 +83,12 @@ internal sealed class FpsComparisonTracker
             false);
     }
 
+    public FpsDeltaSnapshot CompleteCurrentSession()
+    {
+        CompleteSessionIfNeeded();
+        return _lastCompleted;
+    }
+
     private void BeginSession(string sessionKey, string sessionName)
     {
         CompleteSessionIfNeeded();

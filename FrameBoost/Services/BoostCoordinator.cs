@@ -18,6 +18,8 @@ internal sealed class BoostCoordinator : IDisposable
     private readonly SemaphoreSlim _gate = new(1, 1);
     private ActiveBoostSession? _activeSession;
     private DateTimeOffset _lastMaintenancePassAt = DateTimeOffset.MinValue;
+    private DateTimeOffset _maintenanceBackoffUntil = DateTimeOffset.MinValue;
+    private double? _recentFpsReference;
 
     // Tweak flags — set by ConfigureTweaks() from MainForm after settings load
     private bool _enableTimerResolution;
@@ -60,6 +62,47 @@ internal sealed class BoostCoordinator : IDisposable
     public event EventHandler<ActiveBoostSession?>? ActiveSessionChanged;
 
     public ActiveBoostSession? ActiveSession => _activeSession;
+
+    private static readonly TimeSpan LauncherHandoffTimeout = TimeSpan.FromSeconds(6);
+    private static readonly TimeSpan LauncherHandoffPollInterval = TimeSpan.FromMilliseconds(400);
+
+    public void ObserveTelemetry(TelemetrySnapshot telemetry, bool enableMaintenanceBackoff)
+    {
+        if (!enableMaintenanceBackoff || _activeSession is null || _activeSession.RecoveryState.IsPreLaunchBoost)
+        {
+            return;
+        }
+
+        if (telemetry.FramesPerSecond is not > 0)
+        {
+            return;
+        }
+
+        if (_recentFpsReference is null)
+        {
+            _recentFpsReference = telemetry.FramesPerSecond.Value;
+            return;
+        }
+
+        _recentFpsReference = (_recentFpsReference.Value * 0.8) + (telemetry.FramesPerSecond.Value * 0.2);
+        if (DateTimeOffset.Now < _maintenanceBackoffUntil)
+        {
+            return;
+        }
+
+        var fpsDropThreshold = _recentFpsReference.Value * 0.88;
+        var cpuHigh = telemetry.CpuPercent >= 78;
+        var fpsDropped = telemetry.FramesPerSecond.Value < fpsDropThreshold;
+
+        if (!fpsDropped || !cpuHigh)
+        {
+            return;
+        }
+
+        var interval = _activeSession.Profile.GetMaintenanceInterval();
+        _maintenanceBackoffUntil = DateTimeOffset.Now + TimeSpan.FromSeconds(Math.Max(8, interval.TotalSeconds * 2.5));
+        _logger.Log($"Maintenance backoff engaged for '{_activeSession.Profile.Name}' after CloudFrame saw a live FPS dip under CPU pressure.");
+    }
 
     public async Task RecoverPendingSessionAsync(IReadOnlyList<GameProfile> profiles)
     {
@@ -112,6 +155,8 @@ internal sealed class BoostCoordinator : IDisposable
                     AntiCheatStatus = AntiCheatStatus.None
                 };
             _lastMaintenancePassAt = DateTimeOffset.Now;
+            _maintenanceBackoffUntil = DateTimeOffset.MinValue;
+            _recentFpsReference = null;
 
             _logger.Log($"Universal boost is active using the {profile.BoostPreset} preset.");
             _logger.Log("Universal boost is active. Safe pre-launch tuning will stay on until you restore it or boost a profiled game.");
@@ -146,7 +191,14 @@ internal sealed class BoostCoordinator : IDisposable
             Process process;
             try
             {
-                process = Process.GetProcessById(processId);
+                var resolvedGameProcess = _processService.WaitForResolvedGameProcess(
+                    profile,
+                    processId,
+                    null,
+                    LauncherHandoffTimeout,
+                    LauncherHandoffPollInterval);
+                var effectiveProcessId = resolvedGameProcess?.ProcessId ?? processId;
+                process = Process.GetProcessById(effectiveProcessId);
             }
             catch
             {
@@ -168,8 +220,11 @@ internal sealed class BoostCoordinator : IDisposable
                     };
 
                 state.ProfileId = profile.Id;
-                state.GameProcessId = processId;
+                state.AnchorProcessId = processId;
+                state.AnchorProcessName = processId == process.Id ? process.ProcessName : TryGetProcessName(processId) ?? process.ProcessName;
+                state.GameProcessId = process.Id;
                 state.GameProcessName = process.ProcessName;
+                state.EngineHint = _processService.GetEngineHint(profile, executablePath, process.ProcessName);
                 state.IsPreLaunchBoost = false;
                 state.CompatibilityModeEnabled = antiCheatStatus.UseCompatibilityMode;
                 state.AntiCheatVendor = antiCheatStatus.IsDetected ? antiCheatStatus.DisplayName : null;
@@ -178,32 +233,9 @@ internal sealed class BoostCoordinator : IDisposable
                 await ApplyPowerPlanAsync(profile, state).ConfigureAwait(false);
                 if (!reusingPreLaunchBoost) ApplySystemTweaks(); // already applied in pre-launch path
 
-                if (!antiCheatStatus.UseCompatibilityMode
-                    && profile.BoostGamePriority
-                    && !state.Restores.Any(item => item.ProcessId == process.Id && item.IsGameProcess)
-                    && _priorityService.TryGetPriority(process, out var originalGamePriority))
+                if (!antiCheatStatus.UseCompatibilityMode)
                 {
-                    state.Restores.Add(new ProcessPriorityRestoreItem
-                    {
-                        ProcessId = process.Id,
-                        ProcessName = process.ProcessName,
-                        OriginalPriorityClass = originalGamePriority,
-                        HasOriginalPriorityClass = true,
-                        IsGameProcess = true
-                    });
-
-                    var targetPriority = profile.ToProcessPriorityClass();
-                    string? gamePriorityError = null;
-                    if (originalGamePriority != targetPriority &&
-                        _priorityService.TrySetPriority(process, targetPriority, out gamePriorityError))
-                    {
-                        state.GamePriorityRaised = true;
-                        _logger.Log($"Raised '{profile.Name}' to {targetPriority} priority.");
-                    }
-                    else if (!string.IsNullOrWhiteSpace(gamePriorityError))
-                    {
-                        _logger.Log($"Could not adjust game priority for '{profile.Name}': {gamePriorityError}");
-                    }
+                    ApplyGamePriority(profile, state, process);
                 }
 
                 if (!antiCheatStatus.UseCompatibilityMode)
@@ -224,8 +256,20 @@ internal sealed class BoostCoordinator : IDisposable
                     AntiCheatStatus = antiCheatStatus
                 };
                 _lastMaintenancePassAt = DateTimeOffset.Now;
+                _maintenanceBackoffUntil = DateTimeOffset.MinValue;
+                _recentFpsReference = null;
 
                 var triggerLabel = autoTriggered ? "Auto-boosted" : reusingPreLaunchBoost ? "Boosted from universal mode" : "Boosted";
+                if (state.AnchorProcessId > 0 && state.AnchorProcessId != state.GameProcessId)
+                {
+                    _logger.Log($"Resolved '{profile.Name}' from launcher PID {state.AnchorProcessId} to live game PID {state.GameProcessId}.");
+                }
+
+                if (!string.IsNullOrWhiteSpace(state.EngineHint))
+                {
+                    _logger.Log($"Engine hint for '{profile.Name}': {state.EngineHint}.");
+                }
+
                 _logger.Log($"{triggerLabel} '{profile.Name}' (PID {process.Id}).");
                 _logger.Log(BuildBoostSummary(profile, state, antiCheatStatus));
                 ActiveSessionChanged?.Invoke(this, _activeSession);
@@ -323,12 +367,19 @@ internal sealed class BoostCoordinator : IDisposable
                 if (_activeSession.RecoveryState.IsPreLaunchBoost)
                 {
                     if (_activeSession.Profile.ShouldRunRecurringMaintenance()
+                        && DateTimeOffset.Now >= _maintenanceBackoffUntil
                         && DateTimeOffset.Now - _lastMaintenancePassAt >= _activeSession.Profile.GetMaintenanceInterval())
                     {
                         await RunMaintenancePassAsync().ConfigureAwait(false);
                     }
 
                     continue;
+                }
+
+                if (TryRefreshGameProcessBinding())
+                {
+                    _recoveryStateService.Save(_activeSession.RecoveryState);
+                    ActiveSessionChanged?.Invoke(this, _activeSession);
                 }
 
                 if (!ProcessService.IsProcessAlive(_activeSession.RecoveryState.GameProcessId))
@@ -339,6 +390,7 @@ internal sealed class BoostCoordinator : IDisposable
 
                 if (!_activeSession.AntiCheatStatus.UseCompatibilityMode
                     && _activeSession.Profile.ShouldRunRecurringMaintenance()
+                    && DateTimeOffset.Now >= _maintenanceBackoffUntil
                     && DateTimeOffset.Now - _lastMaintenancePassAt >= _activeSession.Profile.GetMaintenanceInterval())
                 {
                     await RunMaintenancePassAsync().ConfigureAwait(false);
@@ -443,6 +495,84 @@ internal sealed class BoostCoordinator : IDisposable
         {
             state.PowerPlanChanged = true;
             _logger.Log($"Switched power plan from '{activePlan.Name}' to '{profile.PreferredPowerPlanName ?? profile.PreferredPowerPlanGuid}'.");
+        }
+    }
+
+    private bool TryRefreshGameProcessBinding()
+    {
+        if (_activeSession is null || _activeSession.RecoveryState.IsPreLaunchBoost)
+        {
+            return false;
+        }
+
+        var anchorProcessId = _activeSession.RecoveryState.AnchorProcessId > 0
+            ? _activeSession.RecoveryState.AnchorProcessId
+            : _activeSession.RecoveryState.GameProcessId;
+        var currentGameProcessId = _activeSession.RecoveryState.GameProcessId;
+        var resolved = _processService.ResolveGameProcess(_activeSession.Profile, anchorProcessId, currentGameProcessId);
+        if (resolved is null || resolved.ProcessId == currentGameProcessId)
+        {
+            return false;
+        }
+
+        try
+        {
+            using var process = Process.GetProcessById(resolved.ProcessId);
+            _activeSession.RecoveryState.GameProcessId = process.Id;
+            _activeSession.RecoveryState.GameProcessName = process.ProcessName;
+            _activeSession.RecoveryState.EngineHint = resolved.EngineHint;
+            ApplyGamePriority(_activeSession.Profile, _activeSession.RecoveryState, process);
+            _logger.Log($"Handed '{_activeSession.Profile.Name}' off to live game PID {process.Id} ({process.ProcessName}){(string.IsNullOrWhiteSpace(resolved.EngineHint) ? string.Empty : $" [{resolved.EngineHint}]")}.");
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private void ApplyGamePriority(GameProfile profile, BoostRecoveryState state, Process process)
+    {
+        if (!profile.BoostGamePriority
+            || state.Restores.Any(item => item.ProcessId == process.Id && item.IsGameProcess)
+            || !_priorityService.TryGetPriority(process, out var originalGamePriority))
+        {
+            return;
+        }
+
+        state.Restores.Add(new ProcessPriorityRestoreItem
+        {
+            ProcessId = process.Id,
+            ProcessName = process.ProcessName,
+            OriginalPriorityClass = originalGamePriority,
+            HasOriginalPriorityClass = true,
+            IsGameProcess = true
+        });
+
+        var targetPriority = profile.ToProcessPriorityClass();
+        string? gamePriorityError = null;
+        if (originalGamePriority != targetPriority &&
+            _priorityService.TrySetPriority(process, targetPriority, out gamePriorityError))
+        {
+            state.GamePriorityRaised = true;
+            _logger.Log($"Raised '{profile.Name}' to {targetPriority} priority.");
+        }
+        else if (!string.IsNullOrWhiteSpace(gamePriorityError))
+        {
+            _logger.Log($"Could not adjust game priority for '{profile.Name}': {gamePriorityError}");
+        }
+    }
+
+    private static string? TryGetProcessName(int processId)
+    {
+        try
+        {
+            using var process = Process.GetProcessById(processId);
+            return process.ProcessName;
+        }
+        catch
+        {
+            return null;
         }
     }
 
@@ -686,6 +816,8 @@ internal sealed class BoostCoordinator : IDisposable
         _logger.Log(reason);
         _activeSession = null;
         _lastMaintenancePassAt = DateTimeOffset.MinValue;
+        _maintenanceBackoffUntil = DateTimeOffset.MinValue;
+        _recentFpsReference = null;
         ActiveSessionChanged?.Invoke(this, null);
 
         if (profile is not null)

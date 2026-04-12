@@ -84,19 +84,35 @@ internal sealed class GameDetectionService : IDisposable
                     continue;
                 }
 
+                var resolvedGameProcess = _processService.ResolveGameProcess(profile!, process.Id);
+                var effectiveProcessId = resolvedGameProcess?.ProcessId ?? process.Id;
+                var effectiveProcessName = resolvedGameProcess?.ProcessName ?? process.ProcessName;
+                var effectiveExecutablePath = resolvedGameProcess?.ExecutablePath ?? executablePath;
+
                 var detected = new DetectedGame
                 {
                     Profile = profile!,
-                    ProcessId = process.Id,
-                    ProcessName = process.ProcessName,
-                    ExecutablePath = executablePath
+                    ProcessId = effectiveProcessId,
+                    ProcessName = effectiveProcessName,
+                    ExecutablePath = effectiveExecutablePath,
+                    AnchorProcessId = process.Id,
+                    AnchorProcessName = process.ProcessName,
+                    EngineHint = resolvedGameProcess?.EngineHint ?? _processService.GetEngineHint(profile!, effectiveExecutablePath, effectiveProcessName)
                 };
 
-                nextSnapshot[process.Id] = detected;
+                nextSnapshot[effectiveProcessId] = detected;
 
-                if (!_currentGames.ContainsKey(process.Id))
+                if (!_currentGames.ContainsKey(effectiveProcessId))
                 {
-                    _logger.Log($"Detected profiled game '{profile!.Name}' (PID {process.Id}).");
+                    if (detected.HasLauncherHandoff)
+                    {
+                        _logger.Log($"Detected profiled game '{profile!.Name}' through launcher PID {detected.AnchorProcessId}, resolved to game PID {detected.ProcessId}{(string.IsNullOrWhiteSpace(detected.EngineHint) ? string.Empty : $" ({detected.EngineHint})")}.");
+                    }
+                    else
+                    {
+                        _logger.Log($"Detected profiled game '{profile!.Name}' (PID {detected.ProcessId}){(string.IsNullOrWhiteSpace(detected.EngineHint) ? string.Empty : $" ({detected.EngineHint})")}.");
+                    }
+
                     GameDetected?.Invoke(this, detected);
                 }
             }

@@ -32,6 +32,22 @@ public enum OverlayFontPreset
     Trebuchet
 }
 
+public enum OverlayProfilePreset
+{
+    Custom,
+    Competitive,
+    Minimal,
+    Streamer,
+    FullStats
+}
+
+public enum MonitoringMode
+{
+    Minimal,
+    Balanced,
+    Detailed
+}
+
 internal sealed class AppSettings
 {
     // ── Detection / startup ───────────────────────────────────────────────────
@@ -41,11 +57,19 @@ internal sealed class AppSettings
 
     public bool EnableUpdateChecks { get; set; } = true;
 
-    public string GitHubRepository { get; set; } = string.Empty;
+    public string GitHubRepository { get; set; } = "CloudyCodez/CloudFrame";
 
     public string? SkippedUpdateVersion { get; set; }
 
     public AppThemePreset ThemePreset { get; set; } = AppThemePreset.Graphite;
+
+    public bool MinimizeToTray { get; set; }
+
+    public bool HasCompletedFirstRunSetup { get; set; }
+
+    public MonitoringMode MonitoringMode { get; set; } = MonitoringMode.Balanced;
+
+    public bool EnableMaintenanceBackoff { get; set; } = true;
 
     // ── Universal boost defaults ──────────────────────────────────────────────
     public bool UniversalSwitchPowerPlan { get; set; } = true;
@@ -65,10 +89,14 @@ internal sealed class AppSettings
     // ── Profiles ──────────────────────────────────────────────────────────────
     public List<GameProfile> Profiles { get; set; } = [];
 
+    public List<GameRecommendationMemory> RecommendationMemories { get; set; } = [];
+
     // ── Overlay position & style ──────────────────────────────────────────────
     public OverlayPosition OverlayPosition { get; set; } = OverlayPosition.TopLeft;
 
     public OverlayStyle OverlayStyle { get; set; } = OverlayStyle.Card;
+
+    public OverlayProfilePreset OverlayProfilePreset { get; set; } = OverlayProfilePreset.Competitive;
 
     /// <summary>Show the FPS counter in the overlay.</summary>
     public bool OverlayShowFps { get; set; } = true;
@@ -109,4 +137,25 @@ internal sealed class AppSettings
     /// Removes a hidden DX overhead layer. Requires no elevation.
     /// </summary>
     public bool DisableGameDvr { get; set; } = true;
+}
+
+internal sealed class GameRecommendationMemory
+{
+    public string ProfileId { get; set; } = string.Empty;
+
+    public string ProfileName { get; set; } = string.Empty;
+
+    public string ExecutableName { get; set; } = string.Empty;
+
+    public string ExecutablePath { get; set; } = string.Empty;
+
+    public string RecommendedTitle { get; set; } = string.Empty;
+
+    public string RecommendedDetail { get; set; } = string.Empty;
+
+    public string Action { get; set; } = string.Empty;
+
+    public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.Now;
+
+    public bool CanAutoApply { get; set; }
 }

@@ -21,6 +21,7 @@ internal sealed class ProfileEditorForm : Form
     private readonly CheckBox _useEcoQosCheckBox;
     private readonly CheckBox _enableRecurringMaintenanceCheckBox;
     private readonly TextBox _backgroundProcessesTextBox;
+    private readonly ComboBox _templateComboBox;
 
     public GameProfile WorkingCopy { get; }
 
@@ -68,14 +69,14 @@ internal sealed class ProfileEditorForm : Form
         {
             Dock = DockStyle.Fill,
             ColumnCount = 2,
-            RowCount = 15,
+            RowCount = 16,
             Padding = new Padding(0, 14, 0, 14),
             AutoScroll = true,
             BackColor = AppTheme.Canvas
         };
         editor.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 132));
         editor.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        for (var row = 0; row < 14; row++)
+        for (var row = 0; row < 15; row++)
         {
             editor.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         }
@@ -161,10 +162,17 @@ internal sealed class ProfileEditorForm : Form
             ScrollBars = ScrollBars.Vertical,
             Text = profile.BackgroundProcessesRaw
         }, multiline: true);
+        _templateComboBox = AppTheme.StyleComboBox(new ComboBox
+        {
+            Dock = DockStyle.Left,
+            Width = 240,
+            DropDownStyle = ComboBoxStyle.DropDownList
+        });
 
         BindPriorityOptions(profile.GamePriority);
         BindPresetOptions(profile.BoostPreset);
         BindPowerPlans(profile.PreferredPowerPlanGuid);
+        BindSafeTargetTemplates();
 
         var browseButton = AppTheme.CreateButton("Browse...", width: 108);
         browseButton.Margin = new Padding(10, 0, 0, 0);
@@ -187,6 +195,23 @@ internal sealed class ProfileEditorForm : Form
         pathButtonRow.Controls.Add(_pathTextBox, 0, 0);
         pathButtonRow.Controls.Add(browseButton, 1, 0);
         pathButtonRow.Controls.Add(runningProcessButton, 2, 0);
+
+        var templateButtonRow = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            WrapContents = true,
+            BackColor = AppTheme.Canvas,
+            Margin = new Padding(0)
+        };
+        var appendTemplateButton = AppTheme.CreateButton("Append Template", width: 148);
+        appendTemplateButton.Click += (_, _) => ApplySafeTargetTemplate(append: true);
+        var replaceTemplateButton = AppTheme.CreateButton("Replace With Template", width: 172);
+        replaceTemplateButton.Click += (_, _) => ApplySafeTargetTemplate(append: false);
+        templateButtonRow.Controls.Add(_templateComboBox);
+        templateButtonRow.Controls.Add(appendTemplateButton);
+        templateButtonRow.Controls.Add(replaceTemplateButton);
 
         editor.Controls.Add(CreateFieldLabel("Name"), 0, 0);
         editor.Controls.Add(_nameTextBox, 1, 0);
@@ -218,6 +243,8 @@ internal sealed class ProfileEditorForm : Form
         editor.Controls.Add(_enableRecurringMaintenanceCheckBox, 1, 13);
         editor.Controls.Add(CreateFieldLabel("Process Names"), 0, 14);
         editor.Controls.Add(_backgroundProcessesTextBox, 1, 14);
+        editor.Controls.Add(CreateFieldLabel("Templates"), 0, 15);
+        editor.Controls.Add(templateButtonRow, 1, 15);
 
         var buttonHost = new Panel
         {
@@ -409,6 +436,38 @@ internal sealed class ProfileEditorForm : Form
         _powerPlanComboBox.SelectedIndex = matchingIndex >= 0 ? matchingIndex : 0;
     }
 
+    private void BindSafeTargetTemplates()
+    {
+        _templateComboBox.Items.Clear();
+        foreach (var template in SafeTargetTemplate.CreateDefaults())
+        {
+            _templateComboBox.Items.Add(template);
+        }
+
+        if (_templateComboBox.Items.Count > 0)
+        {
+            _templateComboBox.SelectedIndex = 0;
+        }
+    }
+
+    private void ApplySafeTargetTemplate(bool append)
+    {
+        if (_templateComboBox.SelectedItem is not SafeTargetTemplate template)
+        {
+            return;
+        }
+
+        var current = _backgroundProcessesTextBox.Text
+            .Split([',', ';', '\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(static item => !string.IsNullOrWhiteSpace(item));
+
+        var next = append
+            ? current.Concat(template.Processes).Distinct(StringComparer.OrdinalIgnoreCase)
+            : template.Processes;
+
+        _backgroundProcessesTextBox.Text = string.Join(", ", next);
+    }
+
     private static Label CreateFieldLabel(string text)
     {
         return new Label
@@ -428,5 +487,59 @@ internal sealed class ProfileEditorForm : Form
         public string? Guid { get; init; }
 
         public override string ToString() => DisplayName;
+    }
+
+    private sealed class SafeTargetTemplate
+    {
+        public string Name { get; init; } = string.Empty;
+
+        public string Description { get; init; } = string.Empty;
+
+        public IReadOnlyList<string> Processes { get; init; } = [];
+
+        public override string ToString() => $"{Name} — {Description}";
+
+        public static IReadOnlyList<SafeTargetTemplate> CreateDefaults()
+        {
+            return
+            [
+                new SafeTargetTemplate
+                {
+                    Name = "Gaming Essentials",
+                    Description = "Balanced browser, launcher, and chat cleanup",
+                    Processes = ["Discord", "SteamWebHelper", "Chrome", "msedge", "firefox", "opera", "EpicGamesLauncher", "GalaxyClient"]
+                },
+                new SafeTargetTemplate
+                {
+                    Name = "Launchers",
+                    Description = "Storefront and launcher helpers",
+                    Processes = ["SteamWebHelper", "EpicGamesLauncher", "GalaxyClient", "RiotClientServices", "EADesktop", "UbisoftConnect", "Battle.net"]
+                },
+                new SafeTargetTemplate
+                {
+                    Name = "Browsers",
+                    Description = "Common browser processes",
+                    Processes = ["Chrome", "msedge", "firefox", "opera", "brave"]
+                },
+                new SafeTargetTemplate
+                {
+                    Name = "Chat and Voice",
+                    Description = "Messaging and voice apps",
+                    Processes = ["Discord", "Slack", "Telegram", "Teams"]
+                },
+                new SafeTargetTemplate
+                {
+                    Name = "Overlays and Capture",
+                    Description = "Overlay-heavy helper apps",
+                    Processes = ["Overwolf", "Discord", "SteamWebHelper", "NVIDIA Share", "RadeonSoftware"]
+                },
+                new SafeTargetTemplate
+                {
+                    Name = "Sync and Cloud",
+                    Description = "Non-essential sync clients",
+                    Processes = ["OneDrive", "Dropbox", "GoogleDriveFS"]
+                }
+            ];
+        }
     }
 }

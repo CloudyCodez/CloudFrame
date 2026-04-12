@@ -17,6 +17,9 @@ internal sealed class MainForm : Form
     private readonly SystemTelemetryService _systemTelemetryService = new();
     private readonly PresentMonFpsService _presentMonFpsService;
     private readonly FpsComparisonTracker _fpsComparisonTracker = new();
+    private readonly ProfileTuningAdvisor _profileTuningAdvisor = new();
+    private readonly UpdateCheckerService _updateCheckerService;
+    private readonly IssueReportService _issueReportService = new();
     private readonly ProcessService _processService = new();
     private readonly PriorityService _priorityService = new();
     private readonly ShaderCacheService _shaderCacheService = new();
@@ -57,6 +60,8 @@ internal sealed class MainForm : Form
     private ToggleChip _ecoQosChip                 = null!;
     private ToggleChip _maintenanceChip            = null!;
     private CheckBox _overlayToggleCheckBox = null!;
+    private CheckBox _minimizeToTrayCheckBox = null!;
+    private ComboBox _overlayProfileComboBox = null!;
     private ComboBox _overlayPositionComboBox = null!;
     private ComboBox _overlayStyleComboBox = null!;
     private CheckBox _overlayShowFpsCheckBox = null!;
@@ -76,7 +81,19 @@ internal sealed class MainForm : Form
     private Label _boostControlHintLabel = null!;
     private Label _safeTargetsLabel = null!;
     private Label _toolsSelectionLabel = null!;
+    private Label _diagnosticsSummaryLabel = null!;
+    private Label _presentMonReadyLabel = null!;
+    private Label _gpuReadyLabel = null!;
+    private Label _elevationReadyLabel = null!;
+    private Label _overlayReadyLabel = null!;
+    private Label _launcherHandoffLabel = null!;
+    private Label _trayModeLabel = null!;
+    private Label _sessionReportLabel = null!;
+    private Label _sessionReportDetailLabel = null!;
+    private Label _recommendationLabel = null!;
+    private Label _recommendationDetailLabel = null!;
     private ComboBox _defaultPresetComboBox = null!;
+    private ComboBox _monitoringModeComboBox = null!;
     private ListBox _powerPlanList = null!;
     private Label _shaderCacheLabel = null!;
     private Label _profileCountLabel = null!;
@@ -94,16 +111,31 @@ internal sealed class MainForm : Form
     private MetricCard _deltaCard = null!;
     private BoostGaugeControl _boostGauge = null!;
     private PerformanceOverlayForm? _overlayForm;
+    private NotifyIcon? _trayIcon;
     private TelemetrySnapshot _latestTelemetry = new();
     private bool _isSyncingBoostControls;
+    private bool _isSyncingOverlayStudio;
     private bool _startupReady;
     private bool _startupFallbackMode;
+    private bool _restoringFromTray;
+    private bool _isCheckingForUpdates;
+    private ActiveBoostSession? _lastLiveSession;
+    private SessionReport? _lastSessionReport;
+    private ProfileTuningRecommendation _currentRecommendation = ProfileTuningRecommendation.Empty;
+    private int _telemetrySampleCounter;
+    private double? _lastGpuTelemetry;
 
     public MainForm()
     {
         _settings = _settingsService.Load();
+        if (string.IsNullOrWhiteSpace(_settings.GitHubRepository))
+        {
+            _settings.GitHubRepository = "CloudyCodez/CloudFrame";
+        }
+        ApplyMonitoringMode();
         AppTheme.ApplyPreset(_settings.ThemePreset);
         _presentMonFpsService = new PresentMonFpsService(_logger);
+        _updateCheckerService = new UpdateCheckerService(_logger);
         _powerPlanService = new PowerPlanService(_logger);
         _timerResolutionService = new TimerResolutionService(_logger);
         _registryBoostService   = new WindowsBoostRegistryService(_logger);
@@ -117,6 +149,7 @@ internal sealed class MainForm : Form
             InitializeWindow();
             _logger.Log("MainForm constructor: BuildUi");
             BuildUi();
+            InitializeTrayIcon();
             _logger.Log("MainForm constructor: WireEvents");
             WireEvents();
             _logger.Log("MainForm constructor: BindProfiles");
@@ -168,12 +201,44 @@ internal sealed class MainForm : Form
         _systemTelemetryService.Dispose();
         _overlayForm?.Close();
         _overlayForm?.Dispose();
+        if (_trayIcon is not null)
+        {
+            _trayIcon.Visible = false;
+            _trayIcon.Dispose();
+        }
         _timerResolutionService.Dispose();
         _settingsService.Save(_settings);
         _detectionService.Dispose();
         _boostCoordinator.RestoreCurrentAsync("CloudFrame closed, restoring system state.").GetAwaiter().GetResult();
         _boostCoordinator.Dispose();
         base.OnFormClosing(e);
+    }
+
+    private void InitializeTrayIcon()
+    {
+        var trayMenu = new ContextMenuStrip
+        {
+            BackColor = AppTheme.Surface,
+            ForeColor = AppTheme.TextPrimary
+        };
+
+        var restoreItem = new ToolStripMenuItem("Open CloudFrame");
+        restoreItem.Click += (_, _) => RestoreFromTray();
+        var exitItem = new ToolStripMenuItem("Exit CloudFrame");
+        exitItem.Click += (_, _) => Close();
+        trayMenu.Items.Add(restoreItem);
+        trayMenu.Items.Add(new ToolStripSeparator());
+        trayMenu.Items.Add(exitItem);
+
+        _trayIcon = new NotifyIcon
+        {
+            Text = "CloudFrame",
+            Visible = false,
+            ContextMenuStrip = trayMenu,
+            Icon = Icon ?? SystemIcons.Application
+        };
+
+        _trayIcon.DoubleClick += (_, _) => RestoreFromTray();
     }
 
     private void InitializeWindow()
@@ -356,11 +421,13 @@ internal sealed class MainForm : Form
             AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
             ColumnCount = 1,
-            RowCount = 8,
+            RowCount = 10,
             Padding = new Padding(12),
             BackColor = AppTheme.Canvas,
             Margin = new Padding(0)
         };
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -522,6 +589,116 @@ internal sealed class MainForm : Form
         _boostGauge.Caption = "Boost gauge";
         _boostGauge.Detail = "Preset-driven estimate of tuning strength and scope.";
         gaugePanel.Controls.Add(_boostGauge);
+
+        var sessionReportPanel = new CardPanel
+        {
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            FillColor = AppTheme.Surface,
+            BorderColor = AppTheme.Border,
+            CornerRadius = 18,
+            Margin = new Padding(0, 0, 0, 12),
+            InnerPadding = new Padding(16)
+        };
+        var sessionReportLayout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            ColumnCount = 1,
+            RowCount = 3,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            BackColor = AppTheme.Surface
+        };
+        sessionReportLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        sessionReportLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        sessionReportLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        sessionReportLayout.Controls.Add(new Label
+        {
+            Text = "Last boost result",
+            AutoSize = true,
+            Font = AppTheme.TitleFont(14f),
+            ForeColor = AppTheme.TextPrimary,
+            BackColor = AppTheme.Surface
+        }, 0, 0);
+        _sessionReportLabel = new Label
+        {
+            AutoSize = true,
+            Font = AppTheme.BodyFont(10f),
+            ForeColor = AppTheme.AccentSoft,
+            BackColor = AppTheme.Surface,
+            Margin = new Padding(0, 8, 0, 6),
+            Text = "No completed boost session yet."
+        };
+        _sessionReportDetailLabel = new Label
+        {
+            AutoSize = true,
+            MaximumSize = new Size(1100, 0),
+            Font = AppTheme.CaptionFont(9.5f),
+            ForeColor = AppTheme.TextSecondary,
+            BackColor = AppTheme.Surface,
+            Text = "Boost a selected game, play for a bit, then restore to see a measured result summary here."
+        };
+        sessionReportLayout.Controls.Add(_sessionReportLabel, 0, 1);
+        sessionReportLayout.Controls.Add(_sessionReportDetailLabel, 0, 2);
+        sessionReportPanel.Controls.Add(sessionReportLayout);
+
+        var recommendationPanel = new CardPanel
+        {
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            FillColor = AppTheme.Surface,
+            BorderColor = AppTheme.Border,
+            CornerRadius = 18,
+            Margin = new Padding(0, 0, 0, 12),
+            InnerPadding = new Padding(16)
+        };
+        var recommendationLayout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            ColumnCount = 1,
+            RowCount = 4,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            BackColor = AppTheme.Surface
+        };
+        recommendationLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        recommendationLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        recommendationLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        recommendationLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        recommendationLayout.Controls.Add(new Label
+        {
+            Text = "Recommended profile tuning",
+            AutoSize = true,
+            Font = AppTheme.TitleFont(14f),
+            ForeColor = AppTheme.TextPrimary,
+            BackColor = AppTheme.Surface
+        }, 0, 0);
+        _recommendationLabel = new Label
+        {
+            AutoSize = true,
+            Font = AppTheme.BodyFont(10f),
+            ForeColor = AppTheme.AccentSoft,
+            BackColor = AppTheme.Surface,
+            Margin = new Padding(0, 8, 0, 6),
+            Text = "Need a live session"
+        };
+        _recommendationDetailLabel = new Label
+        {
+            AutoSize = true,
+            MaximumSize = new Size(1100, 0),
+            Font = AppTheme.CaptionFont(9.5f),
+            ForeColor = AppTheme.TextSecondary,
+            BackColor = AppTheme.Surface,
+            Text = "Boost a game and let CloudFrame watch the session for a few seconds to unlock tuning recommendations."
+        };
+        var applyRecommendationButton = AppTheme.CreateButton("Apply Recommendation", width: 178);
+        applyRecommendationButton.Click += (_, _) => ApplyCurrentRecommendation();
+        recommendationLayout.Controls.Add(_recommendationLabel, 0, 1);
+        recommendationLayout.Controls.Add(_recommendationDetailLabel, 0, 2);
+        recommendationLayout.Controls.Add(applyRecommendationButton, 0, 3);
+        recommendationPanel.Controls.Add(recommendationLayout);
 
         var controlPanel = new CardPanel
         {
@@ -838,10 +1015,12 @@ internal sealed class MainForm : Form
         root.Controls.Add(metricCardRow, 0, 1);
         root.Controls.Add(gaugeRow, 0, 2);
         root.Controls.Add(gaugePanel, 0, 3);
-        root.Controls.Add(controlPanel, 0, 4);
-        root.Controls.Add(statusPanel, 0, 5);
-        root.Controls.Add(detectedGroup, 0, 6);
-        root.Controls.Add(logGroup, 0, 7);
+        root.Controls.Add(sessionReportPanel, 0, 4);
+        root.Controls.Add(recommendationPanel, 0, 5);
+        root.Controls.Add(controlPanel, 0, 6);
+        root.Controls.Add(statusPanel, 0, 7);
+        root.Controls.Add(detectedGroup, 0, 8);
+        root.Controls.Add(logGroup, 0, 9);
 
         void syncDashboardLayout()
         {
@@ -1162,10 +1341,11 @@ internal sealed class MainForm : Form
             AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
             ColumnCount = 1,
-            RowCount = 8,
+            RowCount = 9,
             Padding = new Padding(16),
             BackColor = AppTheme.Canvas
         };
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -1207,6 +1387,9 @@ internal sealed class MainForm : Form
         var clearLogButton = AppTheme.CreateButton("Clear Log", width: 112);
         clearLogButton.Click += (_, _) => ClearLog();
 
+        var reportIssueButton = AppTheme.CreateButton("Export Issue Report", width: 166);
+        reportIssueButton.Click += (_, _) => ExportIssueReport();
+
         buttonFlow.Controls.Add(refreshPlansButton);
         buttonFlow.Controls.Add(cleanShaderCacheButton);
         buttonFlow.Controls.Add(trimMemoryButton);
@@ -1215,6 +1398,7 @@ internal sealed class MainForm : Form
         buttonFlow.Controls.Add(openDataButton);
         buttonFlow.Controls.Add(openLogButton);
         buttonFlow.Controls.Add(clearLogButton);
+        buttonFlow.Controls.Add(reportIssueButton);
 
         var safetyCard = new CardPanel
         {
@@ -1288,14 +1472,104 @@ internal sealed class MainForm : Form
         root.Controls.Add(BuildThemeSettingsCard(), 0, 1);
         root.Controls.Add(BuildOverlaySettingsCard(), 0, 2);
         root.Controls.Add(BuildSessionDefaultsCard(), 0, 3);
-        root.Controls.Add(BuildBoostTweaksCard(), 0, 4);
-        root.Controls.Add(safetyCard, 0, 5);
-        root.Controls.Add(AppTheme.CreateSectionTitle("Available Power Plans"), 0, 6);
-        root.Controls.Add(_powerPlanList, 0, 7);
+        root.Controls.Add(BuildReadinessCard(), 0, 4);
+        root.Controls.Add(BuildBoostTweaksCard(), 0, 5);
+        root.Controls.Add(safetyCard, 0, 6);
+        root.Controls.Add(AppTheme.CreateSectionTitle("Available Power Plans"), 0, 7);
+        root.Controls.Add(_powerPlanList, 0, 8);
 
         scrollHost.Controls.Add(root);
         tab.Controls.Add(scrollHost);
         return tab;
+    }
+
+    private CardPanel BuildReadinessCard()
+    {
+        var card = new CardPanel
+        {
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            FillColor = AppTheme.Surface,
+            BorderColor = AppTheme.Border,
+            CornerRadius = 18,
+            Margin = new Padding(0, 0, 0, 14),
+            InnerPadding = new Padding(18)
+        };
+
+        var layout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            ColumnCount = 1,
+            RowCount = 4,
+            BackColor = AppTheme.Surface,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink
+        };
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+
+        layout.Controls.Add(new Label
+        {
+            Text = "Readiness Check",
+            AutoSize = true,
+            Font = AppTheme.TitleFont(14f),
+            ForeColor = AppTheme.TextPrimary
+        }, 0, 0);
+
+        _diagnosticsSummaryLabel = new Label
+        {
+            Text = "CloudFrame will surface whether FPS capture, GPU telemetry, elevation, and overlay routing are ready on this machine.",
+            AutoSize = true,
+            MaximumSize = new Size(980, 0),
+            Font = AppTheme.BodyFont(9.5f),
+            ForeColor = AppTheme.TextSecondary,
+            BackColor = AppTheme.Surface,
+            Margin = new Padding(0, 6, 0, 12)
+        };
+        layout.Controls.Add(_diagnosticsSummaryLabel, 0, 1);
+
+        var flow = new FlowLayoutPanel
+        {
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            WrapContents = true,
+            BackColor = AppTheme.Surface,
+            Margin = new Padding(0)
+        };
+
+        _presentMonReadyLabel = CreateDiagnosticLabel();
+        _gpuReadyLabel = CreateDiagnosticLabel();
+        _elevationReadyLabel = CreateDiagnosticLabel();
+        _overlayReadyLabel = CreateDiagnosticLabel();
+        _launcherHandoffLabel = CreateDiagnosticLabel();
+        _trayModeLabel = CreateDiagnosticLabel();
+
+        flow.Controls.Add(_presentMonReadyLabel);
+        flow.Controls.Add(_gpuReadyLabel);
+        flow.Controls.Add(_elevationReadyLabel);
+        flow.Controls.Add(_overlayReadyLabel);
+        flow.Controls.Add(_launcherHandoffLabel);
+        flow.Controls.Add(_trayModeLabel);
+
+        layout.Controls.Add(flow, 0, 2);
+        card.Controls.Add(layout);
+        return card;
+    }
+
+    private static Label CreateDiagnosticLabel()
+    {
+        return new Label
+        {
+            AutoSize = true,
+            Font = AppTheme.CaptionFont(9.5f),
+            ForeColor = AppTheme.TextPrimary,
+            BackColor = AppTheme.Surface,
+            Margin = new Padding(0, 0, 18, 10),
+            Padding = new Padding(0, 4, 0, 4)
+        };
     }
 
     private CardPanel BuildLegacyOverlaySettingsCard()
@@ -1443,13 +1717,13 @@ internal sealed class MainForm : Form
         {
             Dock = DockStyle.Top,
             ColumnCount = 1,
-            RowCount = 6,
+            RowCount = 7,
             BackColor = AppTheme.Surface,
             AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink
         };
 
-        for (var i = 0; i < 6; i++)
+        for (var i = 0; i < 7; i++)
         {
             layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         }
@@ -1497,6 +1771,20 @@ internal sealed class MainForm : Form
             };
         }
 
+        void MarkOverlayPresetAsCustom()
+        {
+            if (_isSyncingOverlayStudio)
+            {
+                return;
+            }
+
+            _settings.OverlayProfilePreset = OverlayProfilePreset.Custom;
+            if (_overlayProfileComboBox is not null && _overlayProfileComboBox.SelectedItem is not OverlayProfilePreset.Custom)
+            {
+                _overlayProfileComboBox.SelectedItem = OverlayProfilePreset.Custom;
+            }
+        }
+
         FlowLayoutPanel CreateRow(int bottomMargin = 10)
         {
             return new FlowLayoutPanel
@@ -1523,6 +1811,7 @@ internal sealed class MainForm : Form
             checkBox.CheckedChanged += (_, _) =>
             {
                 apply(checkBox.Checked);
+                MarkOverlayPresetAsCustom();
                 SaveSettings();
                 RecreateOverlay();
             };
@@ -1550,10 +1839,38 @@ internal sealed class MainForm : Form
 
             preview.BackColor = Color.FromArgb(255, selected.R, selected.G, selected.B);
             applyColor(selected);
+            MarkOverlayPresetAsCustom();
             SaveSettings();
             RecreateOverlay();
             _logger.Log($"{title} updated.");
         }
+
+        _overlayProfileComboBox = AppTheme.StyleComboBox(new ComboBox
+        {
+            DropDownStyle = ComboBoxStyle.DropDownList,
+            Width = 164,
+            Margin = new Padding(0, 4, 18, 4)
+        });
+        foreach (var preset in Enum.GetValues<OverlayProfilePreset>())
+        {
+            _overlayProfileComboBox.Items.Add(preset);
+        }
+        var overlayProfileIndex = _overlayProfileComboBox.Items.IndexOf(_settings.OverlayProfilePreset);
+        _overlayProfileComboBox.SelectedIndex = overlayProfileIndex >= 0 ? overlayProfileIndex : 0;
+        _overlayProfileComboBox.SelectedIndexChanged += (_, _) =>
+        {
+            if (_isSyncingOverlayStudio)
+            {
+                return;
+            }
+
+            if (_overlayProfileComboBox.SelectedItem is not OverlayProfilePreset preset)
+            {
+                return;
+            }
+
+            ApplyOverlayProfilePreset(preset);
+        };
 
         _overlayStyleComboBox = AppTheme.StyleComboBox(new ComboBox
         {
@@ -1567,6 +1884,7 @@ internal sealed class MainForm : Form
         _overlayStyleComboBox.SelectedIndexChanged += (_, _) =>
         {
             _settings.OverlayStyle = _overlayStyleComboBox.SelectedIndex == 1 ? OverlayStyle.Minimal : OverlayStyle.Card;
+            MarkOverlayPresetAsCustom();
             SaveSettings();
             RecreateOverlay();
         };
@@ -1592,6 +1910,7 @@ internal sealed class MainForm : Form
             }
 
             _settings.OverlayFontPreset = preset;
+            MarkOverlayPresetAsCustom();
             SaveSettings();
             RecreateOverlay();
         };
@@ -1603,6 +1922,10 @@ internal sealed class MainForm : Form
         _overlayAccentPreview = CreatePreview(Color.FromArgb(_settings.OverlayAccentArgb));
         _overlayTextPreview = CreatePreview(Color.FromArgb(_settings.OverlayTextArgb));
         _overlayBackgroundPreview = CreatePreview(Color.FromArgb(_settings.OverlayBackgroundArgb));
+
+        var presetRow = CreateRow();
+        presetRow.Controls.Add(CreateInlineLabel("Profile"));
+        presetRow.Controls.Add(_overlayProfileComboBox);
 
         var styleRow = CreateRow();
         styleRow.Controls.Add(CreateInlineLabel("Style"));
@@ -1660,11 +1983,13 @@ internal sealed class MainForm : Form
             Margin = new Padding(0, 4, 0, 0)
         };
 
-        layout.Controls.Add(styleRow, 0, 2);
-        layout.Controls.Add(metricsRow, 0, 3);
-        layout.Controls.Add(colorsRow, 0, 4);
-        layout.Controls.Add(tipLabel, 0, 5);
+        layout.Controls.Add(presetRow, 0, 2);
+        layout.Controls.Add(styleRow, 0, 3);
+        layout.Controls.Add(metricsRow, 0, 4);
+        layout.Controls.Add(colorsRow, 0, 5);
+        layout.Controls.Add(tipLabel, 0, 6);
         card.Controls.Add(layout);
+        SyncOverlayStudioControls();
         return card;
     }
 
@@ -1869,7 +2194,82 @@ internal sealed class MainForm : Form
             v => _settings.UniversalEnableRecurringMaintenance = v,
             "Reapplies trims and background tuning every few seconds while the boost session is active."));
 
+        _minimizeToTrayCheckBox = MakeDefaultToggle(
+            "Minimize to tray",
+            _settings.MinimizeToTray,
+            v =>
+            {
+                _settings.MinimizeToTray = v;
+                if (!v && _trayIcon is not null)
+                {
+                    _trayIcon.Visible = false;
+                    ShowInTaskbar = true;
+                }
+            },
+            "Keeps the overlay running while the main CloudFrame window hides to the system tray when minimized.");
+        flow.Controls.Add(_minimizeToTrayCheckBox);
+
+        flow.Controls.Add(MakeDefaultToggle(
+            "Use maintenance backoff",
+            _settings.EnableMaintenanceBackoff,
+            v => _settings.EnableMaintenanceBackoff = v,
+            "If CloudFrame sees a sudden live FPS dip under CPU pressure, it briefly backs recurring maintenance off instead of hammering the game."));
+
+        var actionsFlow = new FlowLayoutPanel
+        {
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            WrapContents = true,
+            BackColor = AppTheme.Surface,
+            Margin = new Padding(0, 10, 0, 0)
+        };
+        var checkUpdatesButton = AppTheme.CreateButton("Check for Updates Now", width: 182);
+        checkUpdatesButton.Click += async (_, _) => await CheckForUpdatesAsync(showUpToDateMessage: true);
+        actionsFlow.Controls.Add(checkUpdatesButton);
+        actionsFlow.Controls.Add(new Label
+        {
+            Text = "Monitoring mode:",
+            AutoSize = true,
+            ForeColor = AppTheme.TextSecondary,
+            Font = AppTheme.CaptionFont(9f),
+            Padding = new Padding(8, 9, 8, 0),
+            BackColor = AppTheme.Surface
+        });
+        _monitoringModeComboBox = AppTheme.StyleComboBox(new ComboBox
+        {
+            DropDownStyle = ComboBoxStyle.DropDownList,
+            Width = 136
+        });
+        foreach (var mode in Enum.GetValues<MonitoringMode>())
+        {
+            _monitoringModeComboBox.Items.Add(mode);
+        }
+        _monitoringModeComboBox.SelectedItem = _settings.MonitoringMode;
+        _monitoringModeComboBox.SelectedIndexChanged += (_, _) =>
+        {
+            if (_monitoringModeComboBox.SelectedItem is not MonitoringMode mode)
+            {
+                return;
+            }
+
+            _settings.MonitoringMode = mode;
+            SaveSettings();
+            ApplyMonitoringMode();
+            _logger.Log($"Monitoring mode set to {mode}.");
+        };
+        actionsFlow.Controls.Add(_monitoringModeComboBox);
+        actionsFlow.Controls.Add(new Label
+        {
+            Text = $"Release feed: {_settings.GitHubRepository}",
+            AutoSize = true,
+            ForeColor = AppTheme.TextSecondary,
+            Font = AppTheme.CaptionFont(9f),
+            Padding = new Padding(8, 9, 0, 0),
+            BackColor = AppTheme.Surface
+        });
+
         layout.Controls.Add(flow, 0, 2);
+        layout.Controls.Add(actionsFlow, 0, 3);
         card.Controls.Add(layout);
         return card;
     }
@@ -1967,6 +2367,7 @@ internal sealed class MainForm : Form
             }
         };
         _telemetryTimer.Tick += (_, _) => ScheduleTelemetryRefresh();
+        Resize += (_, _) => HandleWindowResize();
     }
 
     private async Task InitializeAsync()
@@ -1989,6 +2390,50 @@ internal sealed class MainForm : Form
         _telemetryTimer.Start();
         ScheduleTelemetryRefresh();
         _logger.Log("CloudFrame startup warmup complete.");
+
+        MaybeRunFirstRunSetup();
+        _ = CheckForUpdatesAsync(showUpToDateMessage: false);
+    }
+
+    private void HandleWindowResize()
+    {
+        if (!_settings.MinimizeToTray || _restoringFromTray || _trayIcon is null)
+        {
+            return;
+        }
+
+        if (WindowState != FormWindowState.Minimized || !Visible)
+        {
+            return;
+        }
+
+        _trayIcon.Visible = true;
+        ShowInTaskbar = false;
+        Hide();
+        _logger.Log("CloudFrame minimized to the tray.");
+    }
+
+    private void RestoreFromTray()
+    {
+        if (_trayIcon is null || IsDisposed || Disposing)
+        {
+            return;
+        }
+
+        _restoringFromTray = true;
+        try
+        {
+            ShowInTaskbar = true;
+            Show();
+            WindowState = FormWindowState.Normal;
+            Activate();
+            BringToFront();
+            _trayIcon.Visible = false;
+        }
+        finally
+        {
+            _restoringFromTray = false;
+        }
     }
 
     private async Task LoadPowerPlansAsync()
@@ -2149,6 +2594,116 @@ internal sealed class MainForm : Form
         _settingsService.Save(_settings);
     }
 
+    private void ApplyMonitoringMode()
+    {
+        _telemetryTimer.Interval = _settings.MonitoringMode switch
+        {
+            MonitoringMode.Minimal => 2400,
+            MonitoringMode.Detailed => 900,
+            _ => 1500
+        };
+    }
+
+    private async Task CheckForUpdatesAsync(bool showUpToDateMessage)
+    {
+        if (_isCheckingForUpdates || !_settings.EnableUpdateChecks && !showUpToDateMessage)
+        {
+            return;
+        }
+
+        _isCheckingForUpdates = true;
+        try
+        {
+            var result = await _updateCheckerService.CheckForUpdateAsync(
+                _settings.GitHubRepository,
+                _settings.SkippedUpdateVersion);
+
+            if (result.IsUpdateAvailable)
+            {
+                ShowUpdatePrompt(result);
+                return;
+            }
+
+            if (showUpToDateMessage)
+            {
+                MessageBox.Show(this, result.Message, "CloudFrame Updates", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+
+            _logger.Log(result.Message);
+        }
+        finally
+        {
+            _isCheckingForUpdates = false;
+        }
+    }
+
+    private void ShowUpdatePrompt(UpdateCheckResult result)
+    {
+        using var prompt = new UpdatePromptForm(result);
+        prompt.ShowDialog(this);
+
+        switch (prompt.Choice)
+        {
+            case UpdatePromptChoice.OpenRelease:
+                OpenExternalPath(result.ReleaseUrl);
+                _logger.Log($"Opened CloudFrame release page for {result.LatestVersion}.");
+                break;
+            case UpdatePromptChoice.SkipVersion:
+                _settings.SkippedUpdateVersion = result.LatestVersion;
+                SaveSettings();
+                _logger.Log($"Skipped update prompt for CloudFrame {result.LatestVersion}.");
+                break;
+            case UpdatePromptChoice.Later:
+            default:
+                _logger.Log($"Deferred update prompt for CloudFrame {result.LatestVersion}.");
+                break;
+        }
+    }
+
+    private void MaybeRunFirstRunSetup()
+    {
+        if (_settings.HasCompletedFirstRunSetup || _settings.Profiles.Count > 0)
+        {
+            return;
+        }
+
+        using var dialog = new FirstRunSetupForm(GetRunningProcessEntries);
+        if (dialog.ShowDialog(this) != DialogResult.OK)
+        {
+            _settings.HasCompletedFirstRunSetup = true;
+            SaveSettings();
+            return;
+        }
+
+        foreach (var profile in dialog.ProfilesToCreate)
+        {
+            _settings.Profiles.Add(profile);
+        }
+
+        _settings.MinimizeToTray = dialog.EnableTrayMode;
+        _settings.OverlayProfilePreset = dialog.OverlayPreset;
+        ApplyOverlayProfilePreset(dialog.OverlayPreset);
+        _settings.HasCompletedFirstRunSetup = true;
+        SaveSettings();
+        BindProfiles();
+        ManualScanNow();
+        _logger.Log($"Created {dialog.ProfilesToCreate.Count} starter profile(s) from the first-run setup.");
+    }
+
+    private void ExportIssueReport()
+    {
+        var reportPath = _issueReportService.ExportIssueReport(
+            _settings,
+            _boostCoordinator.ActiveSession,
+            _latestTelemetry,
+            _lastSessionReport,
+            _currentRecommendation,
+            _detectedGames);
+
+        _logger.Log($"Exported issue report to '{reportPath}'.");
+        OpenExternalPath(reportPath);
+    }
+
     private void ManualScanNow()
     {
         if (_settings.Profiles.Count == 0)
@@ -2178,7 +2733,7 @@ internal sealed class MainForm : Form
             return;
         }
 
-        var result = await _boostCoordinator.ApplyBoostAsync(detectedGame.Profile, detectedGame.ProcessId, false);
+        var result = await _boostCoordinator.ApplyBoostAsync(detectedGame.Profile, detectedGame.BoostProcessId, false);
         _logger.Log(result.Message);
         UpdateStatusLabels();
         RefreshDetectedGrid();
@@ -2202,7 +2757,7 @@ internal sealed class MainForm : Form
 
         if (matches.Count == 1)
         {
-            var result = await _boostCoordinator.ApplyBoostAsync(profile, matches[0].ProcessId, false);
+            var result = await _boostCoordinator.ApplyBoostAsync(profile, matches[0].BoostProcessId, false);
             _logger.Log(result.Message);
             UpdateStatusLabels();
             RefreshDetectedGrid();
@@ -2228,7 +2783,7 @@ internal sealed class MainForm : Form
             return;
         }
 
-        var selectedResult = await _boostCoordinator.ApplyBoostAsync(profile, selected.ProcessId, false);
+        var selectedResult = await _boostCoordinator.ApplyBoostAsync(profile, selected.BoostProcessId, false);
         _logger.Log(selectedResult.Message);
         UpdateStatusLabels();
         RefreshDetectedGrid();
@@ -2548,7 +3103,14 @@ internal sealed class MainForm : Form
         {
             var status = _boostCoordinator.ActiveSession?.RecoveryState.GameProcessId == game.ProcessId
                 ? BuildSessionStatus(_boostCoordinator.ActiveSession)
-                : "Detected / ready";
+                : game.HasLauncherHandoff
+                    ? $"Detected / via {game.AnchorProcessName ?? "launcher"}"
+                    : "Detected / ready";
+
+            if (!string.IsNullOrWhiteSpace(game.EngineHint))
+            {
+                status += $" / {game.EngineHint}";
+            }
 
             var rowIndex = _detectedGrid.Rows.Add(
                 game.Profile.Name,
@@ -2588,6 +3150,107 @@ internal sealed class MainForm : Form
         SyncPresetCardSelection();
         UpdateToolsSelectionInfo();
         UpdateDashboardCards();
+        UpdateReadinessDiagnostics();
+    }
+
+    private void UpdateReadinessDiagnostics()
+    {
+        if (_diagnosticsSummaryLabel is null)
+        {
+            return;
+        }
+
+        var overlayArmed = _overlayToggleCheckBox?.Checked == true;
+        var presentMonReady = _presentMonFpsService.IsBackendAvailable;
+        var gpuReady = _systemTelemetryService.IsGpuTelemetryAvailable();
+        var elevated = IsElevated();
+        var session = _boostCoordinator.ActiveSession;
+        var trayEnabled = _settings.MinimizeToTray;
+        var handoffReady = session is null
+            || session.RecoveryState.IsPreLaunchBoost
+            || session.RecoveryState.AnchorProcessId <= 0
+            || session.RecoveryState.GameProcessId > 0;
+
+        SetDiagnosticLabel(
+            _presentMonReadyLabel,
+            "FPS backend",
+            presentMonReady ? "Ready" : "Missing",
+            presentMonReady
+                ? Path.GetFileName(_presentMonFpsService.BackendPath) ?? "PresentMon bundle detected."
+                : "PresentMon is not available in the release folder.",
+            presentMonReady);
+
+        SetDiagnosticLabel(
+            _gpuReadyLabel,
+            "GPU telemetry",
+            gpuReady ? "Ready" : "Driver-limited",
+            gpuReady
+                ? "Windows GPU counters are available."
+                : "GPU usage counters are unavailable on this driver or device.",
+            gpuReady);
+
+        SetDiagnosticLabel(
+            _elevationReadyLabel,
+            "Permissions",
+            elevated ? "Elevated" : "Limited",
+            elevated
+                ? "CloudFrame can safely tune game and background process settings."
+                : "Run elevated for the strongest tuning coverage.",
+            elevated);
+
+        SetDiagnosticLabel(
+            _overlayReadyLabel,
+            "Overlay",
+            overlayArmed ? "Armed" : "Off",
+            overlayArmed
+                ? "Overlay will stay available for live session tracking."
+                : "Enable the live overlay when you want in-game stats.",
+            overlayArmed);
+
+        var handoffDetail = session is not null
+            && !session.RecoveryState.IsPreLaunchBoost
+            && session.RecoveryState.AnchorProcessId > 0
+            && session.RecoveryState.AnchorProcessId != session.RecoveryState.GameProcessId
+                ? $"Launcher PID {session.RecoveryState.AnchorProcessId} handed off to live game PID {session.RecoveryState.GameProcessId}."
+                : "Launcher-aware handoff is ready for wrapped launches like EA and anti-cheat starters.";
+        SetDiagnosticLabel(
+            _launcherHandoffLabel,
+            "Launcher handoff",
+            handoffReady ? "Ready" : "Pending",
+            handoffDetail,
+            handoffReady);
+
+        SetDiagnosticLabel(
+            _trayModeLabel,
+            "Tray mode",
+            trayEnabled ? "Enabled" : "Windowed",
+            trayEnabled
+                ? "Minimizing hides CloudFrame to the tray while the overlay keeps running."
+                : "CloudFrame restores as a normal desktop window.",
+            trayEnabled);
+
+        var readyCount = 0;
+        if (presentMonReady) readyCount++;
+        if (gpuReady) readyCount++;
+        if (elevated) readyCount++;
+        if (overlayArmed) readyCount++;
+        if (handoffReady) readyCount++;
+        if (trayEnabled) readyCount++;
+
+        _diagnosticsSummaryLabel.Text = readyCount >= 5
+            ? "CloudFrame is in strong shape for live game testing. The capture path, boost permissions, and session routing are all ready."
+            : "CloudFrame is usable, but this machine still has a few limits. The labels below show what is ready and what may reduce the full 1.1.0 experience.";
+    }
+
+    private static void SetDiagnosticLabel(Label label, string title, string state, string detail, bool healthy)
+    {
+        if (label is null)
+        {
+            return;
+        }
+
+        label.Text = $"{title}: {state} — {detail}";
+        label.ForeColor = healthy ? AppTheme.Success : AppTheme.Warning;
     }
 
     private void UpdateFpsTrackingTarget()
@@ -2668,11 +3331,7 @@ internal sealed class MainForm : Form
     private void OpenDataFolder()
     {
         AppPaths.EnsureDataDirectory();
-        Process.Start(new ProcessStartInfo
-        {
-            FileName = AppPaths.DataDirectory,
-            UseShellExecute = true
-        });
+        OpenExternalPath(AppPaths.DataDirectory);
     }
 
     private void OpenLogFile()
@@ -2683,9 +3342,19 @@ internal sealed class MainForm : Form
             File.WriteAllText(AppPaths.LogPath, string.Empty);
         }
 
+        OpenExternalPath(AppPaths.LogPath);
+    }
+
+    private void OpenExternalPath(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return;
+        }
+
         Process.Start(new ProcessStartInfo
         {
-            FileName = AppPaths.LogPath,
+            FileName = path,
             UseShellExecute = true
         });
     }
@@ -2794,7 +3463,7 @@ internal sealed class MainForm : Form
 
     private List<DetectedGame> FindMatchesForProfile(GameProfile profile)
     {
-        var matches = new List<DetectedGame>();
+        var matches = new Dictionary<int, DetectedGame>();
         var executableName = profile.ExecutableName;
 
         foreach (var process in Process.GetProcesses())
@@ -2820,13 +3489,17 @@ internal sealed class MainForm : Form
                         continue;
                     }
 
-                    matches.Add(new DetectedGame
+                    var resolvedGameProcess = _processService.ResolveGameProcess(profile, process.Id);
+                    var effectiveProcessId = resolvedGameProcess?.ProcessId ?? process.Id;
+                    matches[effectiveProcessId] = new DetectedGame
                     {
                         Profile = profile,
-                        ProcessId = process.Id,
-                        ProcessName = process.ProcessName,
-                        ExecutablePath = executablePath
-                    });
+                        ProcessId = effectiveProcessId,
+                        ProcessName = resolvedGameProcess?.ProcessName ?? process.ProcessName,
+                        ExecutablePath = resolvedGameProcess?.ExecutablePath ?? executablePath,
+                        AnchorProcessId = process.Id,
+                        AnchorProcessName = process.ProcessName
+                    };
                 }
                 catch
                 {
@@ -2834,7 +3507,10 @@ internal sealed class MainForm : Form
             }
         }
 
-        return matches;
+        return matches.Values
+            .OrderByDescending(static match => match.HasLauncherHandoff)
+            .ThenBy(static match => match.ProcessName)
+            .ToList();
     }
 
     private DetectedGame? FindLiveMatchForProfile(GameProfile profile)
@@ -2869,21 +3545,27 @@ internal sealed class MainForm : Form
                             continue;
                         }
 
+                        var resolvedGameProcess = _processService.ResolveGameProcess(profile, process.Id);
                         return new DetectedGame
                         {
                             Profile = profile,
-                            ProcessId = process.Id,
-                            ProcessName = process.ProcessName,
-                            ExecutablePath = executablePath
+                            ProcessId = resolvedGameProcess?.ProcessId ?? process.Id,
+                            ProcessName = resolvedGameProcess?.ProcessName ?? process.ProcessName,
+                            ExecutablePath = resolvedGameProcess?.ExecutablePath ?? executablePath,
+                            AnchorProcessId = process.Id,
+                            AnchorProcessName = process.ProcessName
                         };
                     }
 
+                    var fallbackResolvedGameProcess = _processService.ResolveGameProcess(profile, process.Id);
                     return new DetectedGame
                     {
                         Profile = profile,
-                        ProcessId = process.Id,
-                        ProcessName = process.ProcessName,
-                        ExecutablePath = profile.ExecutablePath
+                        ProcessId = fallbackResolvedGameProcess?.ProcessId ?? process.Id,
+                        ProcessName = fallbackResolvedGameProcess?.ProcessName ?? process.ProcessName,
+                        ExecutablePath = fallbackResolvedGameProcess?.ExecutablePath ?? profile.ExecutablePath,
+                        AnchorProcessId = process.Id,
+                        AnchorProcessName = process.ProcessName
                     };
                 }
                 catch
@@ -2934,12 +3616,128 @@ internal sealed class MainForm : Form
 
     private void HandleActiveSessionChanged(ActiveBoostSession? session)
     {
+        if (_lastLiveSession is not null
+            && !_lastLiveSession.RecoveryState.IsPreLaunchBoost
+            && session is null)
+        {
+            CaptureLastSessionReport(_lastLiveSession);
+        }
+
+        _lastLiveSession = session is not null && !session.RecoveryState.IsPreLaunchBoost
+            ? session
+            : null;
+
         UpdateStatusLabels();
         RefreshDetectedGrid();
 
         UpdateFpsTrackingTarget();
         ScheduleTelemetryRefresh();
         ToggleOverlay(_overlayToggleCheckBox.Checked);
+    }
+
+    private void CaptureLastSessionReport(ActiveBoostSession session)
+    {
+        var delta = _fpsComparisonTracker.CompleteCurrentSession();
+        var actionSummary = BuildAppliedActionSummary(session);
+        var resultLabel = delta.HasResult
+            ? $"{delta.Value} measured"
+            : "No measured delta";
+        var detail = delta.HasResult
+            ? $"{delta.Detail} | Applied: {actionSummary}"
+            : $"Applied: {actionSummary}. Keep the session running a little longer next time so CloudFrame can gather more comparison samples.";
+
+        _lastSessionReport = new SessionReport
+        {
+            ProfileName = session.Profile.Name,
+            Summary = resultLabel,
+            Detail = detail,
+            ResultLabel = delta.HasResult ? "Measured gain" : "Session summary",
+            HasMeasuredGain = delta.HasResult
+        };
+
+        SaveRecommendationMemory(session.Profile, _currentRecommendation);
+    }
+
+    private void ApplyCurrentRecommendation()
+    {
+        if (!_currentRecommendation.CanAutoApply)
+        {
+            _logger.Log("CloudFrame does not have a strong enough recommendation to auto-apply yet.");
+            UpdateDashboardCards();
+            return;
+        }
+
+        var profile = _boostCoordinator.ActiveSession?.Profile ?? SelectedProfile;
+        if (profile is null)
+        {
+            _logger.Log("Select or boost a profile first so CloudFrame knows where to apply the recommendation.");
+            return;
+        }
+
+        _profileTuningAdvisor.ApplyRecommendedTuning(profile, _currentRecommendation);
+        SaveRecommendationMemory(profile, _currentRecommendation);
+        SaveSettings();
+        SyncBoostControlState();
+        SyncPresetCardSelection();
+        UpdateToolsSelectionInfo();
+        UpdateDashboardCards();
+        _logger.Log($"Applied tuning recommendation to '{profile.Name}'.");
+    }
+
+    private void SaveRecommendationMemory(GameProfile profile, ProfileTuningRecommendation recommendation)
+    {
+        if (profile is null || string.IsNullOrWhiteSpace(profile.Id) || string.IsNullOrWhiteSpace(recommendation.Title))
+        {
+            return;
+        }
+
+        var existing = _settings.RecommendationMemories.FirstOrDefault(item => string.Equals(item.ProfileId, profile.Id, StringComparison.OrdinalIgnoreCase));
+        if (existing is null)
+        {
+            existing = new GameRecommendationMemory
+            {
+                ProfileId = profile.Id
+            };
+            _settings.RecommendationMemories.Add(existing);
+        }
+
+        existing.ProfileName = profile.Name;
+        existing.RecommendedTitle = recommendation.Title;
+        existing.RecommendedDetail = recommendation.Detail;
+        existing.Action = recommendation.Action.ToStorageValue();
+        existing.ExecutableName = profile.ExecutableName;
+        existing.ExecutablePath = profile.ExecutablePath;
+        existing.UpdatedAt = DateTimeOffset.Now;
+        existing.CanAutoApply = recommendation.CanAutoApply;
+        SaveSettings();
+    }
+
+    private ProfileTuningRecommendation? GetStoredRecommendation(GameProfile profile)
+    {
+        var memory = _settings.RecommendationMemories
+            .Where(item =>
+                string.Equals(item.ProfileId, profile.Id, StringComparison.OrdinalIgnoreCase) ||
+                (!string.IsNullOrWhiteSpace(item.ExecutablePath) &&
+                 string.Equals(item.ExecutablePath, profile.ExecutablePath, StringComparison.OrdinalIgnoreCase)) ||
+                (!string.IsNullOrWhiteSpace(item.ExecutableName) &&
+                 string.Equals(item.ExecutableName, profile.ExecutableName, StringComparison.OrdinalIgnoreCase)))
+            .OrderByDescending(item => item.UpdatedAt)
+            .FirstOrDefault();
+
+        if (memory is null)
+        {
+            return null;
+        }
+
+        var action = Enum.TryParse<ProfileTuningAction>(memory.Action, ignoreCase: true, out var parsedAction)
+            ? parsedAction
+            : ProfileTuningAction.HoldSteady;
+
+        return new ProfileTuningRecommendation(
+            $"Remembered: {memory.RecommendedTitle}",
+            $"{memory.RecommendedDetail} Saved {memory.UpdatedAt.LocalDateTime:g}.",
+            action,
+            memory.CanAutoApply);
     }
 
     private void ScheduleTelemetryRefresh()
@@ -2967,9 +3765,26 @@ internal sealed class MainForm : Form
             UpdateFpsTrackingTarget();
             var session = _boostCoordinator.ActiveSession;
             var hasLiveSession = session is not null && !session.RecoveryState.IsPreLaunchBoost;
+            _telemetrySampleCounter++;
             var cpuTask = Task.Run(() => _systemTelemetryService.GetCpuPercent());
-            var gpuTask = Task.Run(() => _systemTelemetryService.GetGpuPercent());
-            await Task.WhenAll(cpuTask, gpuTask).ConfigureAwait(false);
+            Task<double?>? gpuTask = null;
+            var shouldSampleGpu = _settings.MonitoringMode switch
+            {
+                MonitoringMode.Minimal => _telemetrySampleCounter % 3 == 0,
+                MonitoringMode.Detailed => true,
+                _ => _telemetrySampleCounter % 2 != 0
+            };
+
+            if (shouldSampleGpu)
+            {
+                gpuTask = Task.Run(() => _systemTelemetryService.GetGpuPercent());
+                await Task.WhenAll(cpuTask, gpuTask).ConfigureAwait(false);
+                _lastGpuTelemetry = gpuTask.Result;
+            }
+            else
+            {
+                await cpuTask.ConfigureAwait(false);
+            }
 
             // When no boost session is active, fall back to tracking whichever
             // non-system window currently has focus so the overlay always works.
@@ -3011,7 +3826,7 @@ internal sealed class MainForm : Form
             var telemetry = new TelemetrySnapshot
             {
                 CpuPercent = cpuTask.Result,
-                GpuPercent = gpuTask.Result,
+                GpuPercent = shouldSampleGpu ? _lastGpuTelemetry : _lastGpuTelemetry,
                 FramesPerSecond = _presentMonFpsService.LatestFps,
                 FpsStatus = _presentMonFpsService.Status,
                 TargetProcessId = hasLiveSession
@@ -3032,6 +3847,8 @@ internal sealed class MainForm : Form
             {
                 return;
             }
+
+            _boostCoordinator.ObserveTelemetry(telemetry, _settings.EnableMaintenanceBackoff);
 
             if (InvokeRequired)
             {
@@ -3098,6 +3915,7 @@ internal sealed class MainForm : Form
     {
         _latestTelemetry = telemetry;
         _fpsComparisonTracker.Observe(telemetry, _boostCoordinator.ActiveSession);
+        _profileTuningAdvisor.Observe(telemetry, _boostCoordinator.ActiveSession);
 
         // Update live stat rings
         if (_cpuRing is not null)
@@ -3173,6 +3991,92 @@ internal sealed class MainForm : Form
         ToggleOverlay(_overlayToggleCheckBox.Checked);
     }
 
+    private void ApplyOverlayProfilePreset(OverlayProfilePreset preset)
+    {
+        if (preset == OverlayProfilePreset.Custom)
+        {
+            _settings.OverlayProfilePreset = preset;
+            SaveSettings();
+            return;
+        }
+
+        _settings.OverlayProfilePreset = preset;
+        switch (preset)
+        {
+            case OverlayProfilePreset.Competitive:
+                _settings.OverlayStyle = OverlayStyle.Minimal;
+                _settings.OverlayFontPreset = OverlayFontPreset.Bahnschrift;
+                _settings.OverlayShowFps = true;
+                _settings.OverlayShowCpu = true;
+                _settings.OverlayShowGpu = true;
+                _settings.OverlayAccentArgb = unchecked((int)0xFFEC40C4);
+                _settings.OverlayTextArgb = unchecked((int)0xFFF8FAFF);
+                _settings.OverlayBackgroundArgb = unchecked((int)0x00000000);
+                break;
+            case OverlayProfilePreset.Minimal:
+                _settings.OverlayStyle = OverlayStyle.Minimal;
+                _settings.OverlayFontPreset = OverlayFontPreset.Consolas;
+                _settings.OverlayShowFps = true;
+                _settings.OverlayShowCpu = false;
+                _settings.OverlayShowGpu = false;
+                _settings.OverlayAccentArgb = unchecked((int)0xFF90F5FF);
+                _settings.OverlayTextArgb = unchecked((int)0xFFF8FAFF);
+                _settings.OverlayBackgroundArgb = unchecked((int)0x00000000);
+                break;
+            case OverlayProfilePreset.Streamer:
+                _settings.OverlayStyle = OverlayStyle.Card;
+                _settings.OverlayFontPreset = OverlayFontPreset.Trebuchet;
+                _settings.OverlayShowFps = true;
+                _settings.OverlayShowCpu = true;
+                _settings.OverlayShowGpu = true;
+                _settings.OverlayAccentArgb = unchecked((int)0xFF64D2FF);
+                _settings.OverlayTextArgb = unchecked((int)0xFFF5FBFF);
+                _settings.OverlayBackgroundArgb = unchecked((int)0xCC11161F);
+                break;
+            case OverlayProfilePreset.FullStats:
+                _settings.OverlayStyle = OverlayStyle.Card;
+                _settings.OverlayFontPreset = OverlayFontPreset.Segoe;
+                _settings.OverlayShowFps = true;
+                _settings.OverlayShowCpu = true;
+                _settings.OverlayShowGpu = true;
+                _settings.OverlayAccentArgb = unchecked((int)0xFF35D07F);
+                _settings.OverlayTextArgb = unchecked((int)0xFFF7FBFF);
+                _settings.OverlayBackgroundArgb = unchecked((int)0xD21A1F29);
+                break;
+        }
+
+        SyncOverlayStudioControls();
+        SaveSettings();
+        RecreateOverlay();
+        _logger.Log($"Applied overlay profile '{preset}'.");
+    }
+
+    private void SyncOverlayStudioControls()
+    {
+        if (_overlayProfileComboBox is null)
+        {
+            return;
+        }
+
+        _isSyncingOverlayStudio = true;
+        try
+        {
+            _overlayProfileComboBox.SelectedItem = _settings.OverlayProfilePreset;
+            _overlayStyleComboBox.SelectedIndex = _settings.OverlayStyle == OverlayStyle.Minimal ? 1 : 0;
+            _overlayFontComboBox.SelectedItem = _settings.OverlayFontPreset;
+            _overlayShowFpsCheckBox.Checked = _settings.OverlayShowFps;
+            _overlayShowCpuCheckBox.Checked = _settings.OverlayShowCpu;
+            _overlayShowGpuCheckBox.Checked = _settings.OverlayShowGpu;
+            _overlayAccentPreview.BackColor = Color.FromArgb(255, Color.FromArgb(_settings.OverlayAccentArgb).R, Color.FromArgb(_settings.OverlayAccentArgb).G, Color.FromArgb(_settings.OverlayAccentArgb).B);
+            _overlayTextPreview.BackColor = Color.FromArgb(255, Color.FromArgb(_settings.OverlayTextArgb).R, Color.FromArgb(_settings.OverlayTextArgb).G, Color.FromArgb(_settings.OverlayTextArgb).B);
+            _overlayBackgroundPreview.BackColor = Color.FromArgb(255, Color.FromArgb(_settings.OverlayBackgroundArgb).R, Color.FromArgb(_settings.OverlayBackgroundArgb).G, Color.FromArgb(_settings.OverlayBackgroundArgb).B);
+        }
+        finally
+        {
+            _isSyncingOverlayStudio = false;
+        }
+    }
+
     private void UpdateDashboardCards()
     {
         if (_boostStatusCard is null || _compatibilityCard is null || _overlayCard is null || _impactCard is null || _deltaCard is null)
@@ -3239,6 +4143,42 @@ internal sealed class MainForm : Form
             _boostGauge.Detail = session is null
                 ? BuildPlannedActionSummary(impactSource)
                 : BuildAppliedActionSummary(session);
+        }
+
+        if (_sessionReportLabel is not null && _sessionReportDetailLabel is not null)
+        {
+            if (session is not null && !session.RecoveryState.IsPreLaunchBoost)
+            {
+                _sessionReportLabel.Text = $"Live session: {session.Profile.Name}";
+                _sessionReportLabel.ForeColor = AppTheme.AccentStrong;
+                _sessionReportDetailLabel.Text = "CloudFrame is collecting post-session comparison data now. Restore when you are done to lock in the measured result summary.";
+            }
+            else if (_lastSessionReport is not null)
+            {
+                _sessionReportLabel.Text = $"{_lastSessionReport.ProfileName} — {_lastSessionReport.Summary}";
+                _sessionReportLabel.ForeColor = _lastSessionReport.HasMeasuredGain ? AppTheme.Success : AppTheme.Warning;
+                _sessionReportDetailLabel.Text = _lastSessionReport.Detail;
+            }
+            else
+            {
+                _sessionReportLabel.Text = "No completed boost session yet.";
+                _sessionReportLabel.ForeColor = AppTheme.AccentSoft;
+                _sessionReportDetailLabel.Text = "Boost a selected game, play for a bit, then restore to see a measured result summary here.";
+            }
+        }
+
+        if (_recommendationLabel is not null && _recommendationDetailLabel is not null)
+        {
+            var liveRecommendation = _profileTuningAdvisor.GetRecommendation(impactSource, session, delta);
+            var storedRecommendation = session is null && SelectedProfile is not null
+                ? GetStoredRecommendation(SelectedProfile)
+                : null;
+
+            _currentRecommendation = storedRecommendation ?? liveRecommendation;
+
+            _recommendationLabel.Text = _currentRecommendation.Title;
+            _recommendationLabel.ForeColor = _currentRecommendation.CanAutoApply ? AppTheme.Success : AppTheme.AccentSoft;
+            _recommendationDetailLabel.Text = _currentRecommendation.Detail;
         }
     }
 

@@ -91,6 +91,23 @@ internal sealed class SystemTelemetryService : IDisposable
         }
     }
 
+    public bool IsGpuTelemetryAvailable()
+    {
+        lock (_gpuSync)
+        {
+            try
+            {
+                RefreshGpuCounters();
+                _lastGpuDiscoveryAt = DateTimeOffset.Now;
+                return _gpuCounters.Count > 0;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+    }
+
     public void Dispose()
     {
         foreach (var counter in _gpuCounters.Values)
