@@ -144,6 +144,8 @@ internal sealed class ProfileTuningAdvisor
         var avgCpu = AverageOrZero(_cpuSamples);
         var avgGpu = AverageOrNull(_gpuSamples);
         var avgFps = AverageOrNull(_fpsSamples);
+        var liveMetrics = fpsDelta.LiveMetrics;
+        var baselineMetrics = fpsDelta.BaselineMetrics;
 
         if (avgCpu >= 84 && (avgGpu is null || avgGpu <= 78))
         {
@@ -159,6 +161,29 @@ internal sealed class ProfileTuningAdvisor
             return new ProfileTuningRecommendation(
                 "You look GPU-bound",
                 $"GPU load is averaging {avgGpu.Value:0}% while CPU load is {avgCpu:0}%. CloudFrame can still tidy the session, but the biggest gains will likely come from in-game graphics changes rather than a more aggressive preset.",
+                ProfileTuningAction.HoldSteady,
+                false);
+        }
+
+        if (liveMetrics is not null
+            && liveMetrics.Value.OnePercentLowFps < liveMetrics.Value.AverageFps * 0.70
+            && avgCpu >= 78)
+        {
+            return new ProfileTuningRecommendation(
+                "Frame pacing is the weak point",
+                $"CloudFrame is seeing {liveMetrics.Value.AverageFps:0.#} FPS average but only {liveMetrics.Value.OnePercentLowFps:0.#} FPS at 1% low. That usually means background pressure or CPU spikes are hurting smoothness more than the headline FPS number. Keep maintenance running and push stronger cleanup for this title.",
+                ProfileTuningAction.FocusOnBackgroundCleanup,
+                true);
+        }
+
+        if (baselineMetrics is not null
+            && liveMetrics is not null
+            && (fpsDelta.DeltaPercent ?? 0) < 2
+            && fpsDelta.DeltaOnePercentLowFps is > 3)
+        {
+            return new ProfileTuningRecommendation(
+                "Stability improved even if average FPS barely moved",
+                $"Average FPS has only moved by {(fpsDelta.DeltaPercent ?? 0):0.#}%, but 1% low improved by {fpsDelta.DeltaOnePercentLowFps.Value:0.#} FPS. CloudFrame is helping smoothness here, so keep the current preset and judge this session by feel as much as raw average FPS.",
                 ProfileTuningAction.HoldSteady,
                 false);
         }

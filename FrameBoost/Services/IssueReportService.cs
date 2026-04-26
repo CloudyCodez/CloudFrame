@@ -52,6 +52,7 @@ internal sealed class IssueReportService
         builder.AppendLine($"CPU: {telemetry.CpuPercent:0.#}%");
         builder.AppendLine($"GPU: {(telemetry.GpuPercent is double gpu ? $"{gpu:0.#}%" : "Unavailable")}");
         builder.AppendLine($"FPS: {(telemetry.FramesPerSecond is double fps ? $"{fps:0.#}" : "--")}");
+        builder.AppendLine($"Frame time: {(telemetry.FrameTimeMs is double frameTime ? $"{frameTime:0.00} ms" : "Unavailable")}");
         builder.AppendLine($"FPS status: {telemetry.FpsStatus}");
         builder.AppendLine($"Tracking PID: {(telemetry.TargetProcessId?.ToString() ?? "None")}");
         builder.AppendLine($"Tracking name: {telemetry.TargetProcessName ?? "None"}");
@@ -73,6 +74,20 @@ internal sealed class IssueReportService
             builder.AppendLine(lastSessionReport.ProfileName);
             builder.AppendLine(lastSessionReport.Summary);
             builder.AppendLine(lastSessionReport.Detail);
+            if (lastSessionReport.BaselineAverageFps is not null || lastSessionReport.LiveAverageFps is not null)
+            {
+                builder.AppendLine($"Average FPS: {(lastSessionReport.BaselineAverageFps is double baselineAvg ? baselineAvg.ToString("0.0") : "--")} -> {(lastSessionReport.LiveAverageFps is double liveAvg ? liveAvg.ToString("0.0") : "--")}");
+            }
+
+            if (lastSessionReport.BaselineOnePercentLowFps is not null || lastSessionReport.LiveOnePercentLowFps is not null)
+            {
+                builder.AppendLine($"1% low FPS: {(lastSessionReport.BaselineOnePercentLowFps is double baselineLow ? baselineLow.ToString("0.0") : "--")} -> {(lastSessionReport.LiveOnePercentLowFps is double liveLow ? liveLow.ToString("0.0") : "--")}");
+            }
+
+            if (lastSessionReport.BaselinePacingScore is not null || lastSessionReport.LivePacingScore is not null)
+            {
+                builder.AppendLine($"Pacing score: {(lastSessionReport.BaselinePacingScore is double baselinePacing ? baselinePacing.ToString("0") : "--")} -> {(lastSessionReport.LivePacingScore is double livePacing ? livePacing.ToString("0") : "--")}");
+            }
         }
 
         builder.AppendLine();

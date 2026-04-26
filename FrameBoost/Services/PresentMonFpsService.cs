@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
 using FrameBoost.Core;
+using FrameBoost.Models;
 namespace FrameBoost.Services;
 
 internal sealed class PresentMonFpsService : IDisposable
@@ -34,6 +35,7 @@ internal sealed class PresentMonFpsService : IDisposable
     private bool _foregroundMode; // track foreground window even without a boosted PID
 
     private double? _latestFps;
+    private double? _latestFrameTimeMs;
     private DateTimeOffset _lastSampleAt = DateTimeOffset.MinValue;
     private DateTimeOffset _lastStartFailureAt = DateTimeOffset.MinValue;
     private string _status = "Waiting for a boosted game";
@@ -50,6 +52,9 @@ internal sealed class PresentMonFpsService : IDisposable
     private int _cachedForegroundPid;
     private DateTimeOffset _foregroundPidSampledAt = DateTimeOffset.MinValue;
     private static readonly int OwnProcessId = Environment.ProcessId;
+
+    public event Action<FpsFrameSample>? SampleCaptured;
+
     public PresentMonFpsService(Logger logger)
     {
         _logger = logger;
@@ -78,6 +83,19 @@ internal sealed class PresentMonFpsService : IDisposable
             {
                 return DateTimeOffset.UtcNow - _lastSampleAt <= SampleFreshness
                     ? _latestFps
+                    : null;
+            }
+        }
+    }
+
+    public double? LatestFrameTimeMs
+    {
+        get
+        {
+            lock (_sync)
+            {
+                return DateTimeOffset.UtcNow - _lastSampleAt <= SampleFreshness
+                    ? _latestFrameTimeMs
                     : null;
             }
         }
@@ -122,6 +140,7 @@ internal sealed class PresentMonFpsService : IDisposable
             if (!enabled && _targetProcessId is null or <= 0)
             {
                 _latestFps = null;
+                _latestFrameTimeMs = null;
                 _lastSampleAt = DateTimeOffset.MinValue;
                 _status = "Waiting for a boosted game";
                 _lastAcceptedGamePid = 0;
@@ -155,6 +174,7 @@ internal sealed class PresentMonFpsService : IDisposable
                 ResetAcceptedTargetProcessIds();
                 ResetRecentSamples();
                 _latestFps = null;
+                _latestFrameTimeMs = null;
                 _lastSampleAt = DateTimeOffset.MinValue;
                 _lastError = null;
                 _status = $"Tracking FPS for {_targetProcessName ?? processMatchName ?? "game"}";
@@ -175,6 +195,7 @@ internal sealed class PresentMonFpsService : IDisposable
                 if (DateTimeOffset.UtcNow - _lastSampleAt > SampleFreshness || _latestFps is null)
                 {
                     _latestFps = null;
+                    _latestFrameTimeMs = null;
                     _status = $"Tracking FPS for {_targetProcessName ?? _targetProcessMatchName ?? "game"}";
                 }
             }
@@ -189,6 +210,7 @@ internal sealed class PresentMonFpsService : IDisposable
                 if (!_foregroundMode)
                 {
                     _latestFps = null;
+                    _latestFrameTimeMs = null;
                     _lastSampleAt = DateTimeOffset.MinValue;
                 }
                 _status = _foregroundMode ? "Waiting for FPS data" : "Waiting for a boosted game";
@@ -499,6 +521,7 @@ internal sealed class PresentMonFpsService : IDisposable
                     }
                 }
 
+                FpsFrameSample? emittedSample = null;
                 lock (_sync)
                 {
                     if (_disposed || sessionVersion != _sessionVersion)
@@ -507,15 +530,27 @@ internal sealed class PresentMonFpsService : IDisposable
                     }
 
                     _latestFps = UpdateSmoothedFps(sample.Fps);
+                    _latestFrameTimeMs = sample.FrameTimeMs;
                     _lastSampleAt = DateTimeOffset.UtcNow;
                     _lastError = null;
                     _status = $"Tracking FPS for {_targetProcessName ?? _targetProcessMatchName ?? sample.Application ?? "game"}";
+                    emittedSample = new FpsFrameSample(
+                        _lastSampleAt,
+                        sample.ProcessId,
+                        sample.Application,
+                        sample.Fps,
+                        sample.FrameTimeMs);
 
                     if (!_loggedFirstSample)
                     {
                         _loggedFirstSample = true;
                         _logger.Log($"PresentMon first FPS sample: {_latestFps:0.0} FPS from '{sample.Application ?? "unknown"}' (PID {sample.ProcessId?.ToString() ?? "unknown"})");
                     }
+                }
+
+                if (emittedSample is FpsFrameSample validSample)
+                {
+                    SampleCaptured?.Invoke(validSample);
                 }
             }
         }
@@ -782,6 +817,7 @@ internal sealed class PresentMonFpsService : IDisposable
             _sessionVersion++;
             _captureActive = false;
             _latestFps = null;
+            _latestFrameTimeMs = null;
             _lastSampleAt = DateTimeOffset.MinValue;
             ResetAcceptedTargetProcessIds();
             ResetRecentSamples();
@@ -880,7 +916,7 @@ internal sealed class PresentMonFpsService : IDisposable
             return false;
         }
 
-        if (!TryReadDouble(values, headerMap, out var fps))
+        if (!TryReadSampleMetrics(values, headerMap, out var fps, out var frameTimeMs))
         {
             return false;
         }
@@ -888,34 +924,39 @@ internal sealed class PresentMonFpsService : IDisposable
         var processId = TryReadInt(values, headerMap);
         var application = TryReadString(values, headerMap, "application");
 
-        sample = new FpsSample(processId, application, fps);
+        sample = new FpsSample(processId, application, fps, frameTimeMs);
         return true;
     }
 
-    private static bool TryReadDouble(IReadOnlyList<string> values, IReadOnlyDictionary<string, int> headerMap, out double value)
+    private static bool TryReadSampleMetrics(IReadOnlyList<string> values, IReadOnlyDictionary<string, int> headerMap, out double fps, out double? frameTimeMs)
     {
-        value = 0;
+        fps = 0;
+        frameTimeMs = null;
 
         if (TryReadDouble(values, headerMap, "msbetweenpresents", out var msBetweenPresents) && msBetweenPresents > 0)
         {
-            value = 1000d / msBetweenPresents;
-            return double.IsFinite(value) && value > 0;
+            fps = 1000d / msBetweenPresents;
+            frameTimeMs = msBetweenPresents;
+            return double.IsFinite(fps) && fps > 0;
         }
 
         if (TryReadDouble(values, headerMap, "msbetweendisplaychange", out var msBetweenDisplay) && msBetweenDisplay > 0)
         {
-            value = 1000d / msBetweenDisplay;
-            return double.IsFinite(value) && value > 0;
+            fps = 1000d / msBetweenDisplay;
+            frameTimeMs = msBetweenDisplay;
+            return double.IsFinite(fps) && fps > 0;
         }
 
-        if (TryReadDouble(values, headerMap, "fps", out value))
+        if (TryReadDouble(values, headerMap, "fps", out fps))
         {
-            return value > 0;
+            frameTimeMs = fps > 0 ? 1000d / fps : null;
+            return fps > 0;
         }
 
-        if (TryReadDouble(values, headerMap, "avgfps", out value))
+        if (TryReadDouble(values, headerMap, "avgfps", out fps))
         {
-            return value > 0;
+            frameTimeMs = fps > 0 ? 1000d / fps : null;
+            return fps > 0;
         }
 
         return false;
@@ -1194,7 +1235,7 @@ internal sealed class PresentMonFpsService : IDisposable
         bool CaptureAlreadyActive,
         bool IsDisposed);
 
-    private readonly record struct FpsSample(int? ProcessId, string? Application, double Fps);
+    private readonly record struct FpsSample(int? ProcessId, string? Application, double Fps, double? FrameTimeMs);
     private readonly record struct FpsTimedSample(DateTimeOffset CapturedAt, double Fps);
 
     private readonly record struct ProcessTreeEntry(int ProcessId, int ParentProcessId, string ExecutableName);

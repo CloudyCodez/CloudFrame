@@ -10,5 +10,7 @@ internal sealed class RunningProcessEntry
 
     public required string ExecutablePath { get; init; }
 
+    public bool HasVisibleWindow { get; init; }
+
     public override string ToString() => $"{ProcessName} ({ProcessId})";
 }

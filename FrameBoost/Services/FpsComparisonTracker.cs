@@ -4,89 +4,113 @@ namespace FrameBoost.Services;
 
 internal sealed class FpsComparisonTracker
 {
-    private const int IdleBaselineSampleLimit = 24;
-    private const int SessionSampleLimit = 36;
-    private const int MinimumBaselineSamples = 5;
-    private const int MinimumSessionSamples = 4;
+    private const int IdleBaselineSampleLimit = 1200;
+    private const int SessionSampleLimit = 1800;
+    private const int MinimumBaselineSamples = 90;
+    private const int MinimumSessionSamples = 120;
 
-    private readonly Queue<double> _idleSamples = new();
-    private readonly Queue<double> _sessionSamples = new();
+    private readonly object _sync = new();
+    private readonly Queue<PerformanceSample> _idleSamples = new();
+    private readonly Queue<PerformanceSample> _sessionSamples = new();
 
     private string? _activeSessionKey;
     private string? _activeSessionName;
-    private double? _baselineAtSessionStart;
+    private FramePerformanceMetrics? _baselineAtSessionStart;
     private FpsDeltaSnapshot _lastCompleted = FpsDeltaSnapshot.Empty;
 
     public void Observe(TelemetrySnapshot telemetry, ActiveBoostSession? session, bool baselineEligible)
     {
-        var fps = telemetry.FramesPerSecond;
-        var hasActiveBoost = session is not null && !session.RecoveryState.IsPreLaunchBoost;
-
-        if (hasActiveBoost)
+        lock (_sync)
         {
-            var sessionKey = $"{session!.Profile.Id}:{session.RecoveryState.GameProcessId}";
-            if (!string.Equals(_activeSessionKey, sessionKey, StringComparison.Ordinal))
-            {
-                BeginSession(sessionKey, session.Profile.Name);
-            }
+            EnsureSessionState(session);
 
-            if (fps is > 0)
+            if (telemetry.FramesPerSecond is > 0)
             {
-                Enqueue(_sessionSamples, fps.Value, SessionSampleLimit);
+                RecordSampleCore(
+                    new PerformanceSample(DateTimeOffset.UtcNow, telemetry.FramesPerSecond.Value, telemetry.FrameTimeMs),
+                    session,
+                    baselineEligible);
             }
-
-            return;
         }
+    }
 
-        CompleteSessionIfNeeded();
-
-        if (baselineEligible && fps is > 0)
+    public void ObserveFrameSample(FpsFrameSample sample, ActiveBoostSession? session, bool baselineEligible)
+    {
+        lock (_sync)
         {
-            Enqueue(_idleSamples, fps.Value, IdleBaselineSampleLimit);
+            EnsureSessionState(session);
+            RecordSampleCore(
+                new PerformanceSample(sample.CapturedAt, sample.Fps, sample.FrameTimeMs),
+                session,
+                baselineEligible);
         }
     }
 
     public FpsDeltaSnapshot GetSnapshot()
     {
-        if (_activeSessionKey is not null)
+        lock (_sync)
         {
-            return BuildActiveSnapshot();
-        }
+            if (_activeSessionKey is not null)
+            {
+                return BuildActiveSnapshot();
+            }
 
-        if (_lastCompleted.HasResult)
-        {
-            return _lastCompleted with { Status = "Last completed boost result" };
-        }
+            if (_lastCompleted.HasResult)
+            {
+                return _lastCompleted with { Status = "Last completed boost result" };
+            }
 
-        var baseline = AverageOrNull(_idleSamples);
-        if (baseline is null)
-        {
+            var baseline = BuildMetricsOrNull(_idleSamples, MinimumBaselineSamples);
+            if (baseline is null)
+            {
+                return new FpsDeltaSnapshot(
+                    "Calibrating",
+                    "Need idle FPS samples",
+                    "Let CloudFrame watch a running game for a few seconds so it can learn your baseline.",
+                    null,
+                    null,
+                    null,
+                    null,
+                    0,
+                    false);
+            }
+
             return new FpsDeltaSnapshot(
-                "Calibrating",
-                "Need idle FPS samples",
-                "Let CloudFrame watch a running game for a few seconds so it can learn your baseline.",
+                "Ready",
+                $"{baseline.Value.AverageFps:0} FPS avg",
+                $"Baseline 1% low {baseline.Value.OnePercentLowFps:0.#} FPS | Pacing {baseline.Value.PacingScore:0} | Boost a selected game to start a live comparison.",
+                baseline,
                 null,
                 null,
                 null,
-                0,
+                baseline.Value.SampleCount,
                 false);
         }
-
-        return new FpsDeltaSnapshot(
-            "Ready",
-            $"{baseline.Value:0} FPS baseline",
-            "Boost a selected game to start a live before/after comparison.",
-            baseline,
-            null,
-            null,
-            _idleSamples.Count,
-            false);
     }
 
     public FpsDeltaSnapshot CompleteCurrentSession()
     {
-        CompleteSessionIfNeeded();
-        return _lastCompleted;
+        lock (_sync)
+        {
+            CompleteSessionIfNeeded();
+            return _lastCompleted;
+        }
+    }
+
+    private void EnsureSessionState(ActiveBoostSession? session)
+    {
+        var hasActiveBoost = session is not null && !session.RecoveryState.IsPreLaunchBoost;
+        if (!hasActiveBoost)
+        {
+            CompleteSessionIfNeeded();
+            return;
+        }
+
+        var sessionKey = $"{session!.Profile.Id}:{session.RecoveryState.GameProcessId}";
+        if (!string.Equals(_activeSessionKey, sessionKey, StringComparison.Ordinal))
+        {
+            BeginSession(sessionKey, session.Profile.Name);
+        }
     }
 
     private void BeginSession(string sessionKey, string sessionName)
@@ -95,7 +119,7 @@ internal sealed class FpsComparisonTracker
         _activeSessionKey = sessionKey;
         _activeSessionName = sessionName;
         _baselineAtSessionStart = _idleSamples.Count >= MinimumBaselineSamples
-            ? AverageOrNull(_idleSamples)
+            ? BuildMetricsOrNull(_idleSamples, MinimumBaselineSamples)
             : null;
         _sessionSamples.Clear();
     }
@@ -114,9 +138,23 @@ internal sealed class FpsComparisonTracker
         _sessionSamples.Clear();
     }
 
+    private void RecordSampleCore(PerformanceSample sample, ActiveBoostSession? session, bool baselineEligible)
+    {
+        if (session is not null && !session.RecoveryState.IsPreLaunchBoost)
+        {
+            Enqueue(_sessionSamples, sample, SessionSampleLimit);
+            return;
+        }
+
+        if (baselineEligible)
+        {
+            Enqueue(_idleSamples, sample, IdleBaselineSampleLimit);
+        }
+    }
+
     private FpsDeltaSnapshot BuildActiveSnapshot()
     {
-        var liveAverage = AverageOrNull(_sessionSamples);
+        var liveMetrics = BuildMetricsOrNull(_sessionSamples, MinimumSessionSamples);
 
         if (_baselineAtSessionStart is null)
         {
@@ -125,55 +163,122 @@ internal sealed class FpsComparisonTracker
                 "Building a baseline",
                 $"CloudFrame needs a few idle FPS samples before it can compare gains for {_activeSessionName ?? "this game"}.",
                 null,
-                liveAverage,
+                liveMetrics,
+                null,
                 null,
                 _sessionSamples.Count,
                 false);
         }
 
-        if (liveAverage is null || _sessionSamples.Count < MinimumSessionSamples)
+        if (liveMetrics is null)
         {
             return new FpsDeltaSnapshot(
                 "Sampling",
                 "Collecting live samples",
                 $"Tracking {_activeSessionName ?? "the boosted game"} now. Delta appears after a few more FPS samples.",
                 _baselineAtSessionStart,
-                liveAverage,
+                null,
+                null,
                 null,
                 _sessionSamples.Count,
                 false);
         }
 
-        var deltaFps = liveAverage.Value - _baselineAtSessionStart.Value;
-        var deltaPercent = _baselineAtSessionStart.Value <= 0
+        var baselineMetrics = _baselineAtSessionStart.Value;
+        var deltaFps = liveMetrics.Value.AverageFps - baselineMetrics.AverageFps;
+        var deltaLow = liveMetrics.Value.OnePercentLowFps - baselineMetrics.OnePercentLowFps;
+        var deltaPercent = baselineMetrics.AverageFps <= 0
             ? 0
-            : (deltaFps / _baselineAtSessionStart.Value) * 100d;
-        var sign = deltaFps >= 0 ? "+" : string.Empty;
+            : (deltaFps / baselineMetrics.AverageFps) * 100d;
+
+        var avgSign = deltaFps >= 0 ? "+" : string.Empty;
+        var lowSign = deltaLow >= 0 ? "+" : string.Empty;
 
         return new FpsDeltaSnapshot(
             "Measured",
-            $"{sign}{deltaFps:0.#} FPS",
-            $"Baseline {_baselineAtSessionStart.Value:0.#} FPS -> Live {liveAverage.Value:0.#} FPS ({sign}{deltaPercent:0.#}%)",
-            _baselineAtSessionStart,
-            liveAverage,
+            $"{avgSign}{deltaFps:0.#} avg | {lowSign}{deltaLow:0.#} 1%",
+            $"Avg {baselineMetrics.AverageFps:0.#} -> {liveMetrics.Value.AverageFps:0.#} FPS | 1% low {baselineMetrics.OnePercentLowFps:0.#} -> {liveMetrics.Value.OnePercentLowFps:0.#} | Pacing {baselineMetrics.PacingScore:0} -> {liveMetrics.Value.PacingScore:0}",
+            baselineMetrics,
+            liveMetrics,
             deltaPercent,
-            _sessionSamples.Count,
+            deltaLow,
+            liveMetrics.Value.SampleCount,
             true);
     }
 
-    private static void Enqueue(Queue<double> queue, double value, int maxCount)
+    private static void Enqueue(Queue<PerformanceSample> queue, PerformanceSample sample, int maxCount)
     {
-        queue.Enqueue(value);
+        queue.Enqueue(sample);
         while (queue.Count > maxCount)
         {
             queue.Dequeue();
         }
     }
 
-    private static double? AverageOrNull(IEnumerable<double> values)
+    private static FramePerformanceMetrics? BuildMetricsOrNull(IEnumerable<PerformanceSample> samples, int minimumSampleCount)
     {
-        var materialized = values as double[] ?? values.ToArray();
-        return materialized.Length == 0 ? null : materialized.Average();
+        var materialized = samples as PerformanceSample[] ?? samples.ToArray();
+        if (materialized.Length < minimumSampleCount)
+        {
+            return null;
+        }
+
+        var averageFps = materialized.Average(static sample => sample.Fps);
+        var frameTimes = materialized
+            .Select(static sample => sample.FrameTimeMs is > 0
+                ? sample.FrameTimeMs.Value
+                : sample.Fps > 0
+                    ? 1000d / sample.Fps
+                    : 0d)
+            .Where(static value => value > 0 && double.IsFinite(value))
+            .OrderBy(static value => value)
+            .ToArray();
+
+        if (frameTimes.Length < minimumSampleCount)
+        {
+            return null;
+        }
+
+        var averageFrameTime = frameTimes.Average();
+        var p50FrameTime = Percentile(frameTimes, 0.50d);
+        var p95FrameTime = Percentile(frameTimes, 0.95d);
+        var p99FrameTime = Percentile(frameTimes, 0.99d);
+        var onePercentLow = p99FrameTime > 0 ? 1000d / p99FrameTime : averageFps;
+        var pacingSpreadRatio = p50FrameTime <= 0 ? 0 : (p95FrameTime - p50FrameTime) / p50FrameTime;
+        var pacingScore = Math.Clamp(100d - (pacingSpreadRatio * 115d), 0d, 100d);
+
+        return new FramePerformanceMetrics(
+            averageFps,
+            onePercentLow,
+            averageFrameTime,
+            p95FrameTime,
+            pacingScore,
+            frameTimes.Length);
+    }
+
+    private static double Percentile(IReadOnlyList<double> orderedValues, double percentile)
+    {
+        if (orderedValues.Count == 0)
+        {
+            return 0;
+        }
+
+        if (orderedValues.Count == 1)
+        {
+            return orderedValues[0];
+        }
+
+        var clamped = Math.Clamp(percentile, 0d, 1d);
+        var position = (orderedValues.Count - 1) * clamped;
+        var lowerIndex = (int)Math.Floor(position);
+        var upperIndex = (int)Math.Ceiling(position);
+        if (lowerIndex == upperIndex)
+        {
+            return orderedValues[lowerIndex];
+        }
+
+        var weight = position - lowerIndex;
+        return orderedValues[lowerIndex] + ((orderedValues[upperIndex] - orderedValues[lowerIndex]) * weight);
     }
 }
 
@@ -181,9 +286,10 @@ internal sealed record FpsDeltaSnapshot(
     string Status,
     string Value,
     string Detail,
-    double? BaselineAverage,
-    double? LiveAverage,
+    FramePerformanceMetrics? BaselineMetrics,
+    FramePerformanceMetrics? LiveMetrics,
     double? DeltaPercent,
+    double? DeltaOnePercentLowFps,
     int SampleCount,
     bool HasResult)
 {
@@ -194,6 +300,12 @@ internal sealed record FpsDeltaSnapshot(
         null,
         null,
         null,
+        null,
         0,
         false);
 }
+
+internal readonly record struct PerformanceSample(
+    DateTimeOffset CapturedAt,
+    double Fps,
+    double? FrameTimeMs);

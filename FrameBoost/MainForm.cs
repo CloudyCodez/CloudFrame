@@ -22,6 +22,9 @@ internal sealed class MainForm : Form
     private readonly UpdateInstallerService _updateInstallerService;
     private readonly IssueReportService _issueReportService = new();
     private readonly ProcessService _processService = new();
+    private readonly GpuTechnologyAdvisorService _gpuTechnologyAdvisorService = new();
+    private readonly WindowResolutionService _windowResolutionService = new();
+    private readonly FrameGenPrototypeService _frameGenPrototypeService;
     private readonly PriorityService _priorityService = new();
     private readonly ShaderCacheService _shaderCacheService = new();
     private readonly TimerResolutionService _timerResolutionService;
@@ -35,6 +38,7 @@ internal sealed class MainForm : Form
     private readonly GameDetectionService _detectionService;
 
     private readonly List<DetectedGame> _detectedGames = [];
+    private readonly List<RunningProcessEntry> _scannedProcesses = [];
     private readonly List<PowerPlanInfo> _powerPlans = [];
 
     // Preset card instances — kept as fields so we can update IsSelected on profile change
@@ -73,6 +77,23 @@ internal sealed class MainForm : Form
     private Panel   _overlayBackgroundPreview = null!;
     private ComboBox _overlayFontComboBox   = null!;
     private ComboBox _themePresetComboBox   = null!;
+    private ComboBox _resolutionProcessComboBox = null!;
+    private ComboBox _resolutionWindowComboBox = null!;
+    private ComboBox _resolutionPresetComboBox = null!;
+    private ComboBox _frameGenCaptureComboBox = null!;
+    private ComboBox _frameGenBackendComboBox = null!;
+    private NumericUpDown _resolutionWidthInput = null!;
+    private NumericUpDown _resolutionHeightInput = null!;
+    private CheckBox _resolutionBorderlessCheckBox = null!;
+    private CheckBox _frameGenEnableCheckBox = null!;
+    private CheckBox _frameGenRequireBorderlessCheckBox = null!;
+    private CheckBox _frameGenDisableOnAntiCheatCheckBox = null!;
+    private CheckBox _frameGenLowLatencyCheckBox = null!;
+    private Label _resolutionStatusLabel = null!;
+    private Label _frameGenStatusLabel = null!;
+    private Label _frameGenGpuSummaryLabel = null!;
+    private Label _frameGenEligibilityLabel = null!;
+    private Label _frameGenEligibilityDetailLabel = null!;
     private Label _monitoringLabel = null!;
     private Label _sessionLabel = null!;
     private Label _elevationLabel = null!;
@@ -101,20 +122,30 @@ internal sealed class MainForm : Form
     private Label _qualityLabel = null!;
     private Label _footerLabel = null!;
     private TabControl _mainTabs = null!;
+    private Label _experienceStatusTitleLabel = null!;
+    private Label _experienceStatusDetailLabel = null!;
+    private Label _experienceStatusContextLabel = null!;
+    private Label _experienceVersionLabel = null!;
     private Label _toolsPreviewThemeLabel = null!;
     private Label _toolsPreviewOverlayLabel = null!;
     private Label _toolsPreviewMonitoringLabel = null!;
     private Label _toolsPreviewDefaultsLabel = null!;
     private Label _dashboardSummaryLabel = null!;
     private Label _dashboardSummaryDetailLabel = null!;
+    private Label _dashboardScanSummaryLabel = null!;
     private Label _advisorLabel = null!;
     private Label _advisorDetailLabel = null!;
+    private Label _performanceLabSummaryLabel = null!;
+    private Label _performanceLabBaselineLabel = null!;
+    private Label _performanceLabLiveLabel = null!;
+    private Label _performanceLabPacingLabel = null!;
     private CheckBox _advancedViewCheckBox = null!;
     private Control _dashboardGaugePanel = null!;
+    private Control _dashboardPerformanceLabPanel = null!;
     private Control _dashboardSessionReportPanel = null!;
     private Control _dashboardRecommendationPanel = null!;
-    private GroupBox _dashboardMatchesGroup = null!;
-    private GroupBox _dashboardLogGroup = null!;
+    private Control _dashboardMatchesGroup = null!;
+    private Control _dashboardLogGroup = null!;
     private readonly ToolTip _uiToolTip = new();
     private CheckBox _switchPowerPlanCheckBox = null!;
     private CheckBox _boostGamePriorityCheckBox = null!;
@@ -135,16 +166,29 @@ internal sealed class MainForm : Form
     private bool _isSyncingOverlayStudio;
     private bool _profileStudioDirty = true;
     private bool _toolsUiDirty = true;
+    private bool _dashboardUiDirty = true;
     private bool _startupReady;
     private bool _startupFallbackMode;
     private bool _restoringFromTray;
     private bool _forceExitRequested;
     private bool _isCheckingForUpdates;
+    private bool _profileRefreshQueued;
+    private bool _toolsRefreshQueued;
+    private bool _dashboardRefreshQueued;
+    private bool _tabSwitchInProgress;
+    private bool _deferredWarmupStarted;
     private ActiveBoostSession? _lastLiveSession;
     private SessionReport? _lastSessionReport;
     private ProfileTuningRecommendation _currentRecommendation = ProfileTuningRecommendation.Empty;
     private int _telemetrySampleCounter;
     private double? _lastGpuTelemetry;
+    private readonly Dictionary<string, Func<TabPage>> _deferredTabBuilders = new(StringComparer.OrdinalIgnoreCase);
+    private readonly System.Windows.Forms.Timer _experienceStatusTimer = new() { Interval = 4200 };
+    private readonly System.Windows.Forms.Timer _deferredTabWarmupTimer = new() { Interval = 260 };
+    private readonly Queue<string> _deferredTabWarmupQueue = new();
+    private string? _transientExperienceMessage;
+    private string? _transientExperienceContext;
+    private bool _transientExperienceWarning;
 
     public MainForm()
     {
@@ -156,14 +200,25 @@ internal sealed class MainForm : Form
         ApplyMonitoringMode();
         AppTheme.ApplyPreset(_settings.ThemePreset);
         _presentMonFpsService = new PresentMonFpsService(_logger);
+        _presentMonFpsService.SampleCaptured += HandlePresentMonSampleCaptured;
         _updateCheckerService = new UpdateCheckerService(_logger);
         _updateInstallerService = new UpdateInstallerService(_logger);
         _powerPlanService = new PowerPlanService(_logger);
         _timerResolutionService = new TimerResolutionService(_logger);
         _registryBoostService   = new WindowsBoostRegistryService(_logger);
+        _frameGenPrototypeService = new FrameGenPrototypeService(_gpuTechnologyAdvisorService, _antiCheatCompatibilityService, _windowResolutionService);
         _boostCoordinator = new BoostCoordinator(_antiCheatCompatibilityService, _logger, _powerPlanService, _priorityService, _processService, _recoveryStateService, _timerResolutionService, _registryBoostService);
         _boostCoordinator.ConfigureTweaks(_settings.EnableTimerResolution, _settings.EnableMmcss, _settings.DisableGameDvr);
         _detectionService = new GameDetectionService(() => _settings.Profiles.Where(static profile => profile.AutoBoost).ToList(), _processService, _logger);
+        _experienceStatusTimer.Tick += (_, _) =>
+        {
+            _experienceStatusTimer.Stop();
+            _transientExperienceMessage = null;
+            _transientExperienceContext = null;
+            _transientExperienceWarning = false;
+            UpdateExperienceStatusFromState();
+        };
+        _deferredTabWarmupTimer.Tick += (_, _) => WarmNextDeferredTab();
 
         try
         {
@@ -317,11 +372,13 @@ internal sealed class MainForm : Form
         var root = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
-            RowCount = 2,
+            RowCount = 3,
             ColumnCount = 1,
             BackColor = AppTheme.Canvas
         };
+        ApplyDoubleBuffering(root);
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
         _mainTabs = new TabControl
@@ -332,13 +389,89 @@ internal sealed class MainForm : Form
             BackColor = AppTheme.Canvas,
             ForeColor = AppTheme.TextPrimary
         };
+        ApplyDoubleBuffering(_mainTabs);
 
         _mainTabs.SuspendLayout();
+        _deferredTabBuilders["Profiles"] = BuildProfilesTab;
+        _deferredTabBuilders["Tools"] = BuildToolsTab;
+        _deferredTabBuilders["Resolution"] = BuildResolutionTab;
+        _deferredTabBuilders["Frame Gen Lab"] = BuildFrameGenLabTab;
         _mainTabs.TabPages.Add(BuildSafeTab("Dashboard", BuildDashboardTab));
-        _mainTabs.TabPages.Add(BuildSafeTab("Profiles", BuildProfilesTab));
-        _mainTabs.TabPages.Add(BuildSafeTab("Tools", BuildToolsTab));
+        _mainTabs.TabPages.Add(CreateDeferredTab("Profiles"));
+        _mainTabs.TabPages.Add(CreateDeferredTab("Tools"));
+        _mainTabs.TabPages.Add(CreateDeferredTab("Resolution"));
+        _mainTabs.TabPages.Add(CreateDeferredTab("Frame Gen Lab"));
         _mainTabs.ResumeLayout();
-        _mainTabs.SelectedIndexChanged += (_, _) => UpdateAnimatedUiState();
+        _mainTabs.SelectedIndexChanged += (_, _) => HandleMainTabChanged();
+
+        var experienceCard = new CardPanel
+        {
+            Dock = DockStyle.Fill,
+            FillColor = AppTheme.Surface,
+            BorderColor = AppTheme.Border,
+            CornerRadius = 16,
+            EnableSpotlight = false,
+            Margin = new Padding(10, 0, 10, 0),
+            Padding = new Padding(16, 12, 16, 12),
+            Height = 76
+        };
+
+        var experienceLayout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 3,
+            RowCount = 2,
+            BackColor = Color.Transparent
+        };
+        experienceLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
+        experienceLayout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        experienceLayout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        experienceLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        experienceLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+
+        _experienceStatusTitleLabel = new Label
+        {
+            AutoSize = true,
+            Font = AppTheme.TitleFont(11.5f),
+            ForeColor = AppTheme.TextPrimary,
+            BackColor = Color.Transparent,
+            Text = "CloudFrame ready"
+        };
+        _experienceStatusDetailLabel = new Label
+        {
+            AutoSize = true,
+            MaximumSize = new Size(780, 0),
+            Font = AppTheme.BodyFont(9.5f),
+            ForeColor = AppTheme.TextSecondary,
+            BackColor = Color.Transparent,
+            Margin = new Padding(0, 4, 0, 0),
+            Text = "CloudFrame is standing by for a profile, live session, or quick action."
+        };
+        _experienceStatusContextLabel = new Label
+        {
+            AutoSize = true,
+            Font = AppTheme.CaptionFont(9.3f),
+            ForeColor = AppTheme.TextSecondary,
+            BackColor = Color.Transparent,
+            Margin = new Padding(18, 2, 18, 0),
+            Text = "Selected profile: none"
+        };
+        _experienceVersionLabel = new Label
+        {
+            AutoSize = true,
+            Font = AppTheme.CaptionFont(9.2f),
+            ForeColor = AppTheme.TextSecondary,
+            BackColor = Color.Transparent,
+            Text = $"Version {Application.ProductVersion}"
+        };
+
+        experienceLayout.Controls.Add(_experienceStatusTitleLabel, 0, 0);
+        experienceLayout.Controls.Add(_experienceStatusDetailLabel, 0, 1);
+        experienceLayout.Controls.Add(_experienceStatusContextLabel, 1, 0);
+        experienceLayout.SetRowSpan(_experienceStatusContextLabel, 2);
+        experienceLayout.Controls.Add(_experienceVersionLabel, 2, 0);
+        experienceLayout.SetRowSpan(_experienceVersionLabel, 2);
+        experienceCard.Controls.Add(experienceLayout);
 
         _footerLabel = new Label
         {
@@ -352,7 +485,8 @@ internal sealed class MainForm : Form
         };
 
         root.Controls.Add(_mainTabs, 0, 0);
-        root.Controls.Add(_footerLabel, 0, 1);
+        root.Controls.Add(experienceCard, 0, 1);
+        root.Controls.Add(_footerLabel, 0, 2);
         Controls.Add(root);
     }
 
@@ -361,7 +495,9 @@ internal sealed class MainForm : Form
         try
         {
             _logger.Log($"Building {title} tab.");
-            return builder();
+            var tab = builder();
+            PrepareControlTreeForFastPaint(tab);
+            return tab;
         }
         catch (Exception ex)
         {
@@ -410,6 +546,238 @@ internal sealed class MainForm : Form
 
         tab.Controls.Add(layout);
         return tab;
+    }
+
+    private TabPage CreateDeferredTab(string title)
+    {
+        var tab = new TabPage(title)
+        {
+            BackColor = AppTheme.Canvas,
+            ForeColor = AppTheme.TextPrimary,
+            Tag = "Deferred"
+        };
+
+        tab.Controls.Add(new Label
+        {
+            Text = $"{title} will load when opened.",
+            AutoSize = true,
+            Font = AppTheme.BodyFont(10f),
+            ForeColor = AppTheme.TextSecondary,
+            Location = new Point(24, 24)
+        });
+
+        return tab;
+    }
+
+    private void HandleMainTabChanged()
+    {
+        if (_mainTabs is null || _tabSwitchInProgress || IsDisposed || Disposing)
+        {
+            return;
+        }
+
+        try
+        {
+            _tabSwitchInProgress = true;
+            _mainTabs.SuspendLayout();
+            EnsureSelectedTabBuilt();
+        }
+        finally
+        {
+            _mainTabs.ResumeLayout(true);
+            _tabSwitchInProgress = false;
+        }
+
+        BeginInvoke(new Action(() =>
+        {
+            if (IsDisposed || Disposing)
+            {
+                return;
+            }
+
+            UpdateAnimatedUiState();
+            RefreshVisibleTabIfDirty();
+            _mainTabs.Invalidate(true);
+            _mainTabs.SelectedTab?.Invalidate(true);
+            _mainTabs.SelectedTab?.Refresh();
+        }));
+    }
+
+    private void EnsureSelectedTabBuilt()
+    {
+        if (_mainTabs?.SelectedTab is not TabPage selectedTab)
+        {
+            return;
+        }
+
+        if (!Equals(selectedTab.Tag, "Deferred"))
+        {
+            return;
+        }
+
+        var title = selectedTab.Text;
+        if (!_deferredTabBuilders.TryGetValue(title, out var builder))
+        {
+            return;
+        }
+
+        var selectedIndex = _mainTabs.SelectedIndex;
+        var builtTab = BuildSafeTab(title, builder);
+        builtTab.Tag = null;
+        _mainTabs.TabPages.RemoveAt(selectedIndex);
+        _mainTabs.TabPages.Insert(selectedIndex, builtTab);
+        _mainTabs.SelectedIndex = selectedIndex;
+    }
+
+    private void RefreshVisibleTabIfDirty()
+    {
+        if (IsDashboardTabActive() && _dashboardUiDirty)
+        {
+            RefreshDashboardUiCore();
+        }
+
+        if (IsProfilesTabActive() && _profileStudioDirty)
+        {
+            RefreshProfileStudioCardCore();
+        }
+
+        if (IsToolsTabActive() && _toolsUiDirty)
+        {
+            RefreshToolsUiCore();
+        }
+    }
+
+    private void QueueDeferredTabWarmup()
+    {
+        if (_deferredWarmupStarted || _mainTabs is null || IsDisposed || Disposing)
+        {
+            return;
+        }
+
+        _deferredWarmupStarted = true;
+        _deferredTabWarmupQueue.Clear();
+
+        foreach (TabPage tab in _mainTabs.TabPages)
+        {
+            if (Equals(tab.Tag, "Deferred"))
+            {
+                _deferredTabWarmupQueue.Enqueue(tab.Text);
+            }
+        }
+
+        if (_deferredTabWarmupQueue.Count > 0)
+        {
+            _deferredTabWarmupTimer.Start();
+        }
+    }
+
+    private void WarmNextDeferredTab()
+    {
+        if (IsDisposed || Disposing || _mainTabs is null)
+        {
+            _deferredTabWarmupTimer.Stop();
+            return;
+        }
+
+        if (_tabSwitchInProgress)
+        {
+            return;
+        }
+
+        while (_deferredTabWarmupQueue.Count > 0)
+        {
+            var title = _deferredTabWarmupQueue.Dequeue();
+            var tabIndex = FindDeferredTabIndex(title);
+            if (tabIndex < 0)
+            {
+                continue;
+            }
+
+            _mainTabs.SuspendLayout();
+            try
+            {
+                BuildDeferredTabAt(tabIndex);
+            }
+            finally
+            {
+                _mainTabs.ResumeLayout(true);
+            }
+
+            return;
+        }
+
+        _deferredTabWarmupTimer.Stop();
+    }
+
+    private int FindDeferredTabIndex(string title)
+    {
+        if (_mainTabs is null)
+        {
+            return -1;
+        }
+
+        for (var i = 0; i < _mainTabs.TabPages.Count; i++)
+        {
+            var tab = _mainTabs.TabPages[i];
+            if (Equals(tab.Tag, "Deferred") && string.Equals(tab.Text, title, StringComparison.OrdinalIgnoreCase))
+            {
+                return i;
+            }
+        }
+
+        return -1;
+    }
+
+    private void BuildDeferredTabAt(int tabIndex)
+    {
+        if (_mainTabs is null || tabIndex < 0 || tabIndex >= _mainTabs.TabPages.Count)
+        {
+            return;
+        }
+
+        var tab = _mainTabs.TabPages[tabIndex];
+        if (!Equals(tab.Tag, "Deferred"))
+        {
+            return;
+        }
+
+        var title = tab.Text;
+        if (!_deferredTabBuilders.TryGetValue(title, out var builder))
+        {
+            return;
+        }
+
+        var selectedIndex = _mainTabs.SelectedIndex;
+        var builtTab = BuildSafeTab(title, builder);
+        builtTab.Tag = null;
+        _mainTabs.TabPages.RemoveAt(tabIndex);
+        _mainTabs.TabPages.Insert(tabIndex, builtTab);
+
+        if (selectedIndex >= 0 && selectedIndex < _mainTabs.TabPages.Count)
+        {
+            _mainTabs.SelectedIndex = selectedIndex;
+        }
+    }
+
+    private static void PrepareControlTreeForFastPaint(Control root)
+    {
+        ApplyDoubleBuffering(root);
+        foreach (Control child in root.Controls)
+        {
+            PrepareControlTreeForFastPaint(child);
+        }
+    }
+
+    private static void ApplyDoubleBuffering(Control control)
+    {
+        try
+        {
+            var property = typeof(Control).GetProperty("DoubleBuffered", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+            property?.SetValue(control, true, null);
+        }
+        catch
+        {
+        }
     }
 
     private void BuildStartupFallbackUi(string message)
@@ -476,11 +844,12 @@ internal sealed class MainForm : Form
             AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
             ColumnCount = 1,
-            RowCount = 12,
+            RowCount = 13,
             Padding = new Padding(12),
             BackColor = AppTheme.Canvas,
             Margin = new Padding(0)
         };
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -550,8 +919,8 @@ internal sealed class MainForm : Form
         };
         var heroBoostButton = AppTheme.CreateButton("Optimize Automatically", primary: true, width: 208);
         heroBoostButton.Click += async (_, _) => await UniversalBoostNowAsync();
-        var heroStartButton = AppTheme.CreateButton("Scan Running Games", width: 164);
-        heroStartButton.Click += (_, _) => ManualScanNow();
+        var heroStartButton = AppTheme.CreateButton("Scan Now", width: 164);
+        heroStartButton.Click += async (_, _) => await ManualScanNowAsync();
         _advancedViewCheckBox = new CheckBox
         {
             Text = "Advanced View",
@@ -707,6 +1076,89 @@ internal sealed class MainForm : Form
         _boostGauge.Detail = "Preset-driven estimate of tuning strength and scope.";
         gaugePanel.Controls.Add(_boostGauge);
         _dashboardGaugePanel = gaugePanel;
+
+        var performanceLabPanel = new CardPanel
+        {
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            FillColor = AppTheme.Surface,
+            BorderColor = AppTheme.Border,
+            CornerRadius = 18,
+            Margin = new Padding(0, 0, 0, 12),
+            InnerPadding = new Padding(16)
+        };
+        var performanceLabLayout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            ColumnCount = 1,
+            RowCount = 6,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            BackColor = AppTheme.Surface
+        };
+        performanceLabLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        performanceLabLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        performanceLabLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        performanceLabLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        performanceLabLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        performanceLabLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        performanceLabLayout.Controls.Add(new Label
+        {
+            Text = "Performance Lab",
+            AutoSize = true,
+            Font = AppTheme.TitleFont(14f),
+            ForeColor = AppTheme.TextPrimary,
+            BackColor = AppTheme.Surface
+        }, 0, 0);
+        _performanceLabSummaryLabel = new Label
+        {
+            AutoSize = true,
+            Font = AppTheme.BodyFont(10f),
+            ForeColor = AppTheme.AccentSoft,
+            BackColor = AppTheme.Surface,
+            Margin = new Padding(0, 8, 0, 8),
+            Text = "CloudFrame is calibrating benchmark-grade session metrics."
+        };
+        _performanceLabBaselineLabel = new Label
+        {
+            AutoSize = true,
+            MaximumSize = new Size(1100, 0),
+            Font = AppTheme.CaptionFont(9.5f),
+            ForeColor = AppTheme.TextSecondary,
+            BackColor = AppTheme.Surface,
+            Text = "Baseline metrics appear after CloudFrame sees a real profiled game idling for a bit."
+        };
+        _performanceLabLiveLabel = new Label
+        {
+            AutoSize = true,
+            MaximumSize = new Size(1100, 0),
+            Font = AppTheme.CaptionFont(9.5f),
+            ForeColor = AppTheme.TextSecondary,
+            BackColor = AppTheme.Surface,
+            Margin = new Padding(0, 4, 0, 0),
+            Text = "Live metrics appear during an active boosted session."
+        };
+        _performanceLabPacingLabel = new Label
+        {
+            AutoSize = true,
+            MaximumSize = new Size(1100, 0),
+            Font = AppTheme.CaptionFont(9.5f),
+            ForeColor = AppTheme.TextSecondary,
+            BackColor = AppTheme.Surface,
+            Margin = new Padding(0, 4, 0, 0),
+            Text = "Pacing score reflects frametime consistency, not just headline FPS."
+        };
+        var copyPerformanceLabButton = AppTheme.CreateButton("Copy Metrics Snapshot", width: 190);
+        copyPerformanceLabButton.Margin = new Padding(0, 10, 0, 0);
+        copyPerformanceLabButton.Click += (_, _) => CopyPerformanceLabSnapshot();
+        performanceLabLayout.Controls.Add(_performanceLabSummaryLabel, 0, 1);
+        performanceLabLayout.Controls.Add(_performanceLabBaselineLabel, 0, 2);
+        performanceLabLayout.Controls.Add(_performanceLabLiveLabel, 0, 3);
+        performanceLabLayout.Controls.Add(_performanceLabPacingLabel, 0, 4);
+        performanceLabLayout.Controls.Add(copyPerformanceLabButton, 0, 5);
+        performanceLabPanel.Controls.Add(performanceLabLayout);
+        _dashboardPerformanceLabPanel = performanceLabPanel;
 
         var sessionReportPanel = new CardPanel
         {
@@ -1050,8 +1502,8 @@ internal sealed class MainForm : Form
         var quickBoostButton = AppTheme.CreateButton("Boost Now", primary: true, width: 132);
         quickBoostButton.Click += async (_, _) => await UniversalBoostNowAsync();
 
-        var startButton = AppTheme.CreateButton("Scan Running Games", width: 164);
-        startButton.Click += (_, _) => ManualScanNow();
+        var startButton = AppTheme.CreateButton("Scan Now", width: 164);
+        startButton.Click += async (_, _) => await ManualScanNowAsync();
 
         var stopButton = AppTheme.CreateButton("Clear Matches", width: 132);
         stopButton.Click += (_, _) => ClearDetectedMatches();
@@ -1117,9 +1569,19 @@ internal sealed class MainForm : Form
         statusPanel.Controls.Add(buttonFlow, 0, 1);
 
         _detectedFilterTextBox = AppTheme.StyleTextBox(new TextBox { Dock = DockStyle.Top });
-        _detectedFilterTextBox.PlaceholderText = "Filter running matches by profile, process, path, or anti-cheat status";
+        _detectedFilterTextBox.PlaceholderText = "Filter scanned processes by profile, process, PID, path, or status";
         _detectedFilterTextBox.Margin = new Padding(0, 0, 0, 10);
         _detectedFilterTextBox.TextChanged += (_, _) => RefreshDetectedGrid();
+
+        _dashboardScanSummaryLabel = new Label
+        {
+            AutoSize = true,
+            Font = AppTheme.CaptionFont(9.5f),
+            ForeColor = AppTheme.TextSecondary,
+            BackColor = AppTheme.Canvas,
+            Margin = new Padding(0, 0, 0, 8),
+            Text = "Press Scan Now to inspect live running processes and pick one for a quick on-the-fly boost."
+        };
 
         _detectedGrid = new DataGridView
         {
@@ -1130,12 +1592,13 @@ internal sealed class MainForm : Form
             MultiSelect = false,
             ReadOnly = true,
             RowHeadersVisible = false,
-            SelectionMode = DataGridViewSelectionMode.FullRowSelect
+            SelectionMode = DataGridViewSelectionMode.FullRowSelect,
+            MinimumSize = new Size(0, 180)
         };
         AppTheme.StyleGrid(_detectedGrid);
         _detectedGrid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Profile", HeaderText = "Profile", Width = 180 });
         _detectedGrid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Process", HeaderText = "Process", Width = 140 });
-        _detectedGrid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Pid", HeaderText = "PID", Width = 70 });
+        _detectedGrid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Pid", HeaderText = "PID", Width = 96 });
         _detectedGrid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Status", HeaderText = "Status", Width = 200 });
         _detectedGrid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Path", HeaderText = "Executable", AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill });
         _detectedGrid.CellDoubleClick += async (_, _) => await BoostSelectedGameAsync();
@@ -1151,33 +1614,82 @@ internal sealed class MainForm : Form
         var detectedPanel = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
-            RowCount = 2,
-            ColumnCount = 1
+            RowCount = 3,
+            ColumnCount = 1,
+            MinimumSize = new Size(0, 248)
         };
         detectedPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        detectedPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         detectedPanel.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        detectedPanel.Controls.Add(_detectedFilterTextBox, 0, 0);
-        detectedPanel.Controls.Add(_detectedGrid, 0, 1);
+        detectedPanel.Controls.Add(_dashboardScanSummaryLabel, 0, 0);
+        detectedPanel.Controls.Add(_detectedFilterTextBox, 0, 1);
+        detectedPanel.Controls.Add(_detectedGrid, 0, 2);
 
-        _dashboardMatchesGroup = new GroupBox
+        var matchesPanel = new CardPanel
         {
-            Text = "Running Matches",
-            Dock = DockStyle.Fill,
-            Font = AppTheme.CaptionFont(10f),
-            ForeColor = AppTheme.TextPrimary,
-            BackColor = AppTheme.Canvas
+            Dock = DockStyle.Top,
+            FillColor = AppTheme.Surface,
+            BorderColor = AppTheme.Border,
+            CornerRadius = 18,
+            Margin = new Padding(0, 0, 0, 12),
+            InnerPadding = new Padding(16),
+            Height = 340,
+            MinimumSize = new Size(0, 340)
         };
-        _dashboardMatchesGroup.Controls.Add(detectedPanel);
+        var matchesLayout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            RowCount = 2,
+            BackColor = AppTheme.Surface
+        };
+        matchesLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        matchesLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        matchesLayout.Controls.Add(new Label
+        {
+            Text = "Running Processes",
+            AutoSize = true,
+            Font = AppTheme.TitleFont(14f),
+            ForeColor = AppTheme.TextPrimary,
+            BackColor = AppTheme.Surface,
+            Margin = new Padding(0, 0, 0, 10)
+        }, 0, 0);
+        matchesLayout.Controls.Add(detectedPanel, 0, 1);
+        matchesPanel.Controls.Add(matchesLayout);
+        _dashboardMatchesGroup = matchesPanel;
 
-        _dashboardLogGroup = new GroupBox
+        var logPanel = new CardPanel
+        {
+            Dock = DockStyle.Top,
+            FillColor = AppTheme.Surface,
+            BorderColor = AppTheme.Border,
+            CornerRadius = 18,
+            Margin = new Padding(0, 0, 0, 12),
+            InnerPadding = new Padding(16),
+            Height = 220,
+            MinimumSize = new Size(0, 220)
+        };
+        var logLayout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            RowCount = 2,
+            BackColor = AppTheme.Surface
+        };
+        logLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        logLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        logLayout.Controls.Add(new Label
         {
             Text = "Activity Log",
-            Dock = DockStyle.Fill,
-            Font = AppTheme.CaptionFont(10f),
+            AutoSize = true,
+            Font = AppTheme.TitleFont(14f),
             ForeColor = AppTheme.TextPrimary,
-            BackColor = AppTheme.Canvas
-        };
-        _dashboardLogGroup.Controls.Add(_logTextBox);
+            BackColor = AppTheme.Surface,
+            Margin = new Padding(0, 0, 0, 10)
+        }, 0, 0);
+        logLayout.Controls.Add(_logTextBox, 0, 1);
+        logPanel.Controls.Add(logLayout);
+        _dashboardLogGroup = logPanel;
 
         root.Controls.Add(hero, 0, 0);
         root.Controls.Add(summaryStrip, 0, 1);
@@ -1188,9 +1700,10 @@ internal sealed class MainForm : Form
         root.Controls.Add(statusPanel, 0, 6);
         root.Controls.Add(_dashboardMatchesGroup, 0, 7);
         root.Controls.Add(gaugePanel, 0, 8);
-        root.Controls.Add(sessionReportPanel, 0, 9);
-        root.Controls.Add(recommendationPanel, 0, 10);
-        root.Controls.Add(_dashboardLogGroup, 0, 11);
+        root.Controls.Add(performanceLabPanel, 0, 9);
+        root.Controls.Add(sessionReportPanel, 0, 10);
+        root.Controls.Add(recommendationPanel, 0, 11);
+        root.Controls.Add(_dashboardLogGroup, 0, 12);
 
         void syncDashboardLayout()
         {
@@ -1503,7 +2016,7 @@ internal sealed class MainForm : Form
             AutoSizeMode = AutoSizeMode.GrowAndShrink
         };
         _profileSnapshotCard.EditRequested += (_, _) => EditSelectedProfile();
-        _profileSnapshotCard.SyncRequested += (_, _) => ManualScanNow();
+        _profileSnapshotCard.SyncRequested += async (_, _) => await ManualScanNowAsync();
         _profileSnapshotCard.SettingsRequested += (_, _) =>
         {
             if (_mainTabs.TabCount > 2)
@@ -1852,11 +2365,843 @@ internal sealed class MainForm : Form
 
         scrollHost.Resize += (_, _) => syncToolsLayout();
         syncToolsLayout();
+        BindLoadedPowerPlans();
+        UpdateShaderCacheLabel();
 
         scrollHost.Controls.Add(root);
         tab.Controls.Add(scrollHost);
         RequestToolsUiRefresh();
         return tab;
+    }
+
+    private TabPage BuildResolutionTab()
+    {
+        var tab = new TabPage("Resolution")
+        {
+            BackColor = AppTheme.Canvas,
+            ForeColor = AppTheme.TextPrimary
+        };
+
+        var scrollHost = new Panel
+        {
+            Dock = DockStyle.Fill,
+            AutoScroll = true,
+            BackColor = AppTheme.Canvas
+        };
+
+        var root = new TableLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            ColumnCount = 1,
+            Padding = new Padding(16, 20, 16, 16),
+            BackColor = AppTheme.Canvas
+        };
+        root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+
+        var headerCard = new CardPanel
+        {
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            FillColor = AppTheme.Surface,
+            BorderColor = AppTheme.Border,
+            CornerRadius = 20,
+            EnableSpotlight = false,
+            Margin = new Padding(0, 0, 0, 16),
+            InnerPadding = new Padding(22, 22, 22, 18)
+        };
+        var headerLayout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            ColumnCount = 1,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            BackColor = AppTheme.Surface
+        };
+        headerLayout.Controls.Add(new Label
+        {
+            Text = "Resolution Control",
+            AutoSize = true,
+            Font = AppTheme.TitleFont(16f),
+            ForeColor = AppTheme.TextPrimary
+        }, 0, 0);
+        headerLayout.Controls.Add(new Label
+        {
+            Text = "Pick a running game window, choose a target resolution, optionally apply borderless, and let CloudFrame resize the live window without leaving the app.",
+            AutoSize = true,
+            MaximumSize = new Size(1040, 0),
+            Font = AppTheme.BodyFont(9.6f),
+            ForeColor = AppTheme.TextSecondary,
+            Margin = new Padding(0, 6, 0, 14)
+        }, 0, 1);
+
+        var actionFlow = new FlowLayoutPanel
+        {
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            WrapContents = true,
+            BackColor = AppTheme.Surface
+        };
+        var refreshProcessesButton = AppTheme.CreateButton("Refresh Running Windows", primary: true, width: 188);
+        refreshProcessesButton.Click += async (_, _) => await RefreshResolutionProcessesAsync();
+        var applyResolutionButton = AppTheme.CreateButton("Apply Resolution", width: 152);
+        applyResolutionButton.Click += async (_, _) => await ApplyResolutionLayoutAsync();
+        var restoreBorderButton = AppTheme.CreateButton("Restore Border", width: 132);
+        restoreBorderButton.Click += (_, _) => RestoreSelectedWindowBorder();
+        var useWindowSizeButton = AppTheme.CreateButton("Read Current Size", width: 150);
+        useWindowSizeButton.Click += (_, _) => SyncResolutionSizeFromSelection();
+
+        actionFlow.Controls.Add(refreshProcessesButton);
+        actionFlow.Controls.Add(applyResolutionButton);
+        actionFlow.Controls.Add(restoreBorderButton);
+        actionFlow.Controls.Add(useWindowSizeButton);
+        headerLayout.Controls.Add(actionFlow, 0, 2);
+        headerCard.Controls.Add(headerLayout);
+
+        var workspace = new TableLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            ColumnCount = 2,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            BackColor = AppTheme.Canvas,
+            Margin = new Padding(0)
+        };
+        workspace.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        workspace.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+
+        var processCard = new CardPanel
+        {
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            FillColor = AppTheme.Surface,
+            BorderColor = AppTheme.Border,
+            CornerRadius = 18,
+            EnableSpotlight = false,
+            Margin = new Padding(0, 0, 12, 0),
+            InnerPadding = new Padding(18)
+        };
+        var processLayout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            ColumnCount = 1,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            BackColor = AppTheme.Surface
+        };
+        processLayout.Controls.Add(new Label
+        {
+            Text = "Target Window",
+            AutoSize = true,
+            Font = AppTheme.TitleFont(14f),
+            ForeColor = AppTheme.TextPrimary
+        }, 0, 0);
+        processLayout.Controls.Add(new Label
+        {
+            Text = "CloudFrame lists visible top-level windows only, so you can target the real game window instead of a hidden launcher helper.",
+            AutoSize = true,
+            MaximumSize = new Size(540, 0),
+            Font = AppTheme.BodyFont(9.5f),
+            ForeColor = AppTheme.TextSecondary,
+            Margin = new Padding(0, 6, 0, 14)
+        }, 0, 1);
+
+        processLayout.Controls.Add(new Label
+        {
+            Text = "Process",
+            AutoSize = true,
+            Font = AppTheme.CaptionFont(9.5f),
+            ForeColor = AppTheme.TextSecondary,
+            Margin = new Padding(0, 0, 0, 6)
+        }, 0, 2);
+        _resolutionProcessComboBox = AppTheme.StyleComboBox(new ComboBox
+        {
+            Dock = DockStyle.Top,
+            DropDownStyle = ComboBoxStyle.DropDownList,
+            Width = 420,
+            Margin = new Padding(0, 0, 0, 12)
+        });
+        _resolutionProcessComboBox.SelectedIndexChanged += (_, _) => RefreshResolutionWindowChoices();
+        processLayout.Controls.Add(_resolutionProcessComboBox, 0, 3);
+
+        processLayout.Controls.Add(new Label
+        {
+            Text = "Window",
+            AutoSize = true,
+            Font = AppTheme.CaptionFont(9.5f),
+            ForeColor = AppTheme.TextSecondary,
+            Margin = new Padding(0, 0, 0, 6)
+        }, 0, 4);
+        _resolutionWindowComboBox = AppTheme.StyleComboBox(new ComboBox
+        {
+            Dock = DockStyle.Top,
+            DropDownStyle = ComboBoxStyle.DropDownList,
+            Width = 420
+        });
+        _resolutionWindowComboBox.SelectedIndexChanged += (_, _) => SyncResolutionSizeFromSelection();
+        processLayout.Controls.Add(_resolutionWindowComboBox, 0, 5);
+        processCard.Controls.Add(processLayout);
+
+        var controlsCard = new CardPanel
+        {
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            FillColor = AppTheme.Surface,
+            BorderColor = AppTheme.Border,
+            CornerRadius = 18,
+            EnableSpotlight = false,
+            Margin = new Padding(12, 0, 0, 0),
+            InnerPadding = new Padding(18)
+        };
+        var controlsLayout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            ColumnCount = 2,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            BackColor = AppTheme.Surface
+        };
+        controlsLayout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        controlsLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+
+        controlsLayout.Controls.Add(new Label
+        {
+            Text = "Window Layout",
+            AutoSize = true,
+            Font = AppTheme.TitleFont(14f),
+            ForeColor = AppTheme.TextPrimary,
+            Margin = new Padding(0, 0, 0, 8)
+        }, 0, 0);
+        controlsLayout.SetColumnSpan(controlsLayout.Controls[0], 2);
+        controlsLayout.Controls.Add(new Label
+        {
+            Text = "Use a preset or enter a custom width and height. Borderless removes the standard window chrome and reapplies the frame cleanly.",
+            AutoSize = true,
+            MaximumSize = new Size(540, 0),
+            Font = AppTheme.BodyFont(9.5f),
+            ForeColor = AppTheme.TextSecondary,
+            Margin = new Padding(0, 0, 0, 14)
+        }, 0, 1);
+        controlsLayout.SetColumnSpan(controlsLayout.Controls[1], 2);
+
+        controlsLayout.Controls.Add(new Label
+        {
+            Text = "Preset",
+            AutoSize = true,
+            Font = AppTheme.CaptionFont(9.5f),
+            ForeColor = AppTheme.TextSecondary,
+            Margin = new Padding(0, 0, 12, 8)
+        }, 0, 2);
+        _resolutionPresetComboBox = AppTheme.StyleComboBox(new ComboBox
+        {
+            DropDownStyle = ComboBoxStyle.DropDownList,
+            Width = 220,
+            Margin = new Padding(0, 0, 0, 10)
+        });
+        _resolutionPresetComboBox.Items.AddRange(
+        [
+            "1280 x 720",
+            "1600 x 900",
+            "1920 x 1080",
+            "2560 x 1440",
+            "3440 x 1440",
+            "3840 x 2160",
+            "Custom"
+        ]);
+        _resolutionPresetComboBox.SelectedIndexChanged += (_, _) => ApplyResolutionPresetSelection();
+        _resolutionPresetComboBox.SelectedIndex = 2;
+        controlsLayout.Controls.Add(_resolutionPresetComboBox, 1, 2);
+
+        controlsLayout.Controls.Add(new Label
+        {
+            Text = "Width",
+            AutoSize = true,
+            Font = AppTheme.CaptionFont(9.5f),
+            ForeColor = AppTheme.TextSecondary,
+            Margin = new Padding(0, 0, 12, 8)
+        }, 0, 3);
+        _resolutionWidthInput = new NumericUpDown
+        {
+            Width = 140,
+            Minimum = 320,
+            Maximum = 7680,
+            Increment = 10,
+            Value = 1920,
+            BackColor = AppTheme.SurfaceAlt,
+            ForeColor = AppTheme.TextPrimary,
+            BorderStyle = BorderStyle.FixedSingle,
+            Font = AppTheme.BodyFont()
+        };
+        controlsLayout.Controls.Add(_resolutionWidthInput, 1, 3);
+
+        controlsLayout.Controls.Add(new Label
+        {
+            Text = "Height",
+            AutoSize = true,
+            Font = AppTheme.CaptionFont(9.5f),
+            ForeColor = AppTheme.TextSecondary,
+            Margin = new Padding(0, 10, 12, 8)
+        }, 0, 4);
+        _resolutionHeightInput = new NumericUpDown
+        {
+            Width = 140,
+            Minimum = 200,
+            Maximum = 4320,
+            Increment = 10,
+            Value = 1080,
+            BackColor = AppTheme.SurfaceAlt,
+            ForeColor = AppTheme.TextPrimary,
+            BorderStyle = BorderStyle.FixedSingle,
+            Font = AppTheme.BodyFont(),
+            Margin = new Padding(0, 10, 0, 0)
+        };
+        controlsLayout.Controls.Add(_resolutionHeightInput, 1, 4);
+
+        _resolutionBorderlessCheckBox = new CheckBox
+        {
+            Text = "Apply borderless window mode",
+            AutoSize = true,
+            ForeColor = AppTheme.TextPrimary,
+            BackColor = AppTheme.Surface,
+            Font = AppTheme.BodyFont(9.8f),
+            Margin = new Padding(0, 14, 0, 0)
+        };
+        controlsLayout.Controls.Add(_resolutionBorderlessCheckBox, 0, 5);
+        controlsLayout.SetColumnSpan(_resolutionBorderlessCheckBox, 2);
+
+        _resolutionStatusLabel = new Label
+        {
+            Text = "Open the tab and refresh running windows when you want to target a live game.",
+            AutoSize = true,
+            MaximumSize = new Size(540, 0),
+            Font = AppTheme.BodyFont(9.5f),
+            ForeColor = AppTheme.TextSecondary,
+            Margin = new Padding(0, 14, 0, 0)
+        };
+        controlsLayout.Controls.Add(_resolutionStatusLabel, 0, 6);
+        controlsLayout.SetColumnSpan(_resolutionStatusLabel, 2);
+        controlsCard.Controls.Add(controlsLayout);
+
+        workspace.Controls.Add(processCard, 0, 0);
+        workspace.Controls.Add(controlsCard, 1, 0);
+
+        root.Controls.Add(headerCard, 0, 0);
+        root.Controls.Add(workspace, 0, 1);
+
+        void syncResolutionLayout()
+        {
+            var availableWidth = Math.Max(920, scrollHost.ClientSize.Width - 8);
+            var cardWidth = Math.Max(420, (availableWidth - 24) / 2);
+            root.MaximumSize = new Size(availableWidth, 0);
+            root.Width = availableWidth;
+            headerCard.MaximumSize = new Size(availableWidth, 0);
+            headerCard.Width = availableWidth;
+            processCard.MaximumSize = new Size(cardWidth, 0);
+            processCard.Width = cardWidth;
+            controlsCard.MaximumSize = new Size(cardWidth, 0);
+            controlsCard.Width = cardWidth;
+        }
+
+        scrollHost.Resize += (_, _) => syncResolutionLayout();
+        syncResolutionLayout();
+
+        scrollHost.Controls.Add(root);
+        tab.Controls.Add(scrollHost);
+
+        BeginInvoke(new Action(async () => await RefreshResolutionProcessesAsync()));
+        return tab;
+    }
+
+    private TabPage BuildFrameGenLabTab()
+    {
+        var techReport = _gpuTechnologyAdvisorService.GetReport();
+
+        var tab = new TabPage("Frame Gen Lab")
+        {
+            BackColor = AppTheme.Canvas,
+            ForeColor = AppTheme.TextPrimary
+        };
+
+        var scrollHost = new Panel
+        {
+            Dock = DockStyle.Fill,
+            AutoScroll = true,
+            BackColor = AppTheme.Canvas
+        };
+
+        var root = new TableLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            ColumnCount = 1,
+            Padding = new Padding(16, 20, 16, 16),
+            BackColor = AppTheme.Canvas
+        };
+        root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+
+        var heroCard = new CardPanel
+        {
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            FillColor = AppTheme.Surface,
+            BorderColor = AppTheme.Border,
+            CornerRadius = 20,
+            EnableSpotlight = false,
+            Margin = new Padding(0, 0, 0, 16),
+            InnerPadding = new Padding(22, 22, 22, 18)
+        };
+        var heroLayout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            ColumnCount = 1,
+            BackColor = AppTheme.Surface
+        };
+        heroLayout.Controls.Add(new Label
+        {
+            Text = "Experimental Frame Gen Lab",
+            AutoSize = true,
+            Font = AppTheme.TitleFont(16f),
+            ForeColor = AppTheme.TextPrimary
+        }, 0, 0);
+        heroLayout.Controls.Add(new Label
+        {
+            Text = "This lab is CloudFrame's future-facing space for external frame interpolation ideas. It is intentionally gated: anti-cheat titles stay off-limits, the safest capture path stays external, and nothing here claims Lossless Scaling parity yet.",
+            AutoSize = true,
+            MaximumSize = new Size(1120, 0),
+            Font = AppTheme.BodyFont(9.6f),
+            ForeColor = AppTheme.TextSecondary,
+            Margin = new Padding(0, 8, 0, 14)
+        }, 0, 1);
+
+        _frameGenEnableCheckBox = new CheckBox
+        {
+            Text = "Enable experimental frame generation lab features",
+            AutoSize = true,
+            Checked = _settings.EnableExperimentalFrameGen,
+            ForeColor = AppTheme.TextPrimary,
+            BackColor = AppTheme.Surface,
+            Font = AppTheme.BodyFont(10f),
+            Margin = new Padding(0, 0, 0, 8)
+        };
+        _frameGenEnableCheckBox.CheckedChanged += (_, _) =>
+        {
+            _settings.EnableExperimentalFrameGen = _frameGenEnableCheckBox.Checked;
+            SaveSettings();
+            UpdateFrameGenLabStatus();
+        };
+        heroLayout.Controls.Add(_frameGenEnableCheckBox, 0, 2);
+
+        _frameGenStatusLabel = new Label
+        {
+            AutoSize = true,
+            MaximumSize = new Size(1120, 0),
+            Font = AppTheme.BodyFont(9.4f),
+            ForeColor = AppTheme.TextSecondary,
+            Margin = new Padding(0, 0, 0, 0)
+        };
+        heroLayout.Controls.Add(_frameGenStatusLabel, 0, 3);
+        _frameGenGpuSummaryLabel = new Label
+        {
+            AutoSize = true,
+            MaximumSize = new Size(1120, 0),
+            Font = AppTheme.BodyFont(9.2f),
+            ForeColor = AppTheme.TextSecondary,
+            Margin = new Padding(0, 10, 0, 0)
+        };
+        heroLayout.Controls.Add(_frameGenGpuSummaryLabel, 0, 4);
+        heroCard.Controls.Add(heroLayout);
+
+        var workspace = new TableLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            ColumnCount = 2,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            BackColor = AppTheme.Canvas,
+            Margin = new Padding(0)
+        };
+        workspace.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        workspace.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+
+        var pipelineCard = new CardPanel
+        {
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            FillColor = AppTheme.Surface,
+            BorderColor = AppTheme.Border,
+            CornerRadius = 18,
+            EnableSpotlight = false,
+            Margin = new Padding(0, 0, 12, 0),
+            InnerPadding = new Padding(18)
+        };
+        var pipelineLayout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            ColumnCount = 2,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            BackColor = AppTheme.Surface
+        };
+        pipelineLayout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        pipelineLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+
+        void AddPipelineLabel(string text, int row, bool title = false, int span = 2, Padding? margin = null)
+        {
+            var label = new Label
+            {
+                Text = text,
+                AutoSize = true,
+                MaximumSize = new Size(540, 0),
+                Font = title ? AppTheme.TitleFont(13f) : AppTheme.BodyFont(9.5f),
+                ForeColor = title ? AppTheme.TextPrimary : AppTheme.TextSecondary,
+                Margin = margin ?? (title ? new Padding(0, 0, 0, 8) : new Padding(0, 0, 0, 12))
+            };
+            pipelineLayout.Controls.Add(label, 0, row);
+            if (span > 1)
+            {
+                pipelineLayout.SetColumnSpan(label, span);
+            }
+        }
+
+        AddPipelineLabel("Pipeline Settings", 0, title: true);
+        AddPipelineLabel("These controls define the safest architecture CloudFrame will eventually use for external interpolation and presentation. They are configuration scaffolding for now, not a live frame-gen engine.", 1, margin: new Padding(0, 0, 0, 14));
+
+        pipelineLayout.Controls.Add(new Label
+        {
+            Text = "Capture mode",
+            AutoSize = true,
+            Font = AppTheme.CaptionFont(9.5f),
+            ForeColor = AppTheme.TextSecondary,
+            Margin = new Padding(0, 0, 12, 8)
+        }, 0, 2);
+        _frameGenCaptureComboBox = AppTheme.StyleComboBox(new ComboBox
+        {
+            DropDownStyle = ComboBoxStyle.DropDownList,
+            Width = 240,
+            Margin = new Padding(0, 0, 0, 10)
+        });
+        foreach (var mode in Enum.GetValues<FrameGenCaptureMode>())
+        {
+            _frameGenCaptureComboBox.Items.Add(mode);
+        }
+        _frameGenCaptureComboBox.SelectedItem = _settings.FrameGenCaptureMode;
+        _frameGenCaptureComboBox.SelectedIndexChanged += (_, _) =>
+        {
+            if (_frameGenCaptureComboBox.SelectedItem is FrameGenCaptureMode mode)
+            {
+                _settings.FrameGenCaptureMode = mode;
+                SaveSettings();
+                UpdateFrameGenLabStatus();
+            }
+        };
+        pipelineLayout.Controls.Add(_frameGenCaptureComboBox, 1, 2);
+
+        pipelineLayout.Controls.Add(new Label
+        {
+            Text = "Interpolation backend",
+            AutoSize = true,
+            Font = AppTheme.CaptionFont(9.5f),
+            ForeColor = AppTheme.TextSecondary,
+            Margin = new Padding(0, 0, 12, 8)
+        }, 0, 3);
+        _frameGenBackendComboBox = AppTheme.StyleComboBox(new ComboBox
+        {
+            DropDownStyle = ComboBoxStyle.DropDownList,
+            Width = 240,
+            Margin = new Padding(0, 0, 0, 10)
+        });
+        foreach (var backend in Enum.GetValues<FrameGenBackend>())
+        {
+            _frameGenBackendComboBox.Items.Add(backend);
+        }
+        _frameGenBackendComboBox.SelectedItem = _settings.FrameGenBackend;
+        _frameGenBackendComboBox.SelectedIndexChanged += (_, _) =>
+        {
+            if (_frameGenBackendComboBox.SelectedItem is FrameGenBackend backend)
+            {
+                _settings.FrameGenBackend = backend;
+                SaveSettings();
+                UpdateFrameGenLabStatus();
+            }
+        };
+        pipelineLayout.Controls.Add(_frameGenBackendComboBox, 1, 3);
+
+        _frameGenRequireBorderlessCheckBox = new CheckBox
+        {
+            Text = "Require borderless/windowed presentation",
+            AutoSize = true,
+            Checked = _settings.FrameGenRequireBorderless,
+            ForeColor = AppTheme.TextPrimary,
+            BackColor = AppTheme.Surface,
+            Font = AppTheme.BodyFont(9.7f),
+            Margin = new Padding(0, 8, 0, 0)
+        };
+        _frameGenRequireBorderlessCheckBox.CheckedChanged += (_, _) =>
+        {
+            _settings.FrameGenRequireBorderless = _frameGenRequireBorderlessCheckBox.Checked;
+            SaveSettings();
+            UpdateFrameGenLabStatus();
+        };
+        pipelineLayout.Controls.Add(_frameGenRequireBorderlessCheckBox, 0, 4);
+        pipelineLayout.SetColumnSpan(_frameGenRequireBorderlessCheckBox, 2);
+
+        _frameGenDisableOnAntiCheatCheckBox = new CheckBox
+        {
+            Text = "Disable automatically when anti-cheat is detected",
+            AutoSize = true,
+            Checked = _settings.FrameGenDisableOnAntiCheat,
+            ForeColor = AppTheme.TextPrimary,
+            BackColor = AppTheme.Surface,
+            Font = AppTheme.BodyFont(9.7f),
+            Margin = new Padding(0, 8, 0, 0)
+        };
+        _frameGenDisableOnAntiCheatCheckBox.CheckedChanged += (_, _) =>
+        {
+            _settings.FrameGenDisableOnAntiCheat = _frameGenDisableOnAntiCheatCheckBox.Checked;
+            SaveSettings();
+            UpdateFrameGenLabStatus();
+        };
+        pipelineLayout.Controls.Add(_frameGenDisableOnAntiCheatCheckBox, 0, 5);
+        pipelineLayout.SetColumnSpan(_frameGenDisableOnAntiCheatCheckBox, 2);
+
+        _frameGenLowLatencyCheckBox = new CheckBox
+        {
+            Text = "Prioritize latency and pacing over maximum synthetic frame count",
+            AutoSize = true,
+            Checked = _settings.FrameGenPreferLowLatency,
+            ForeColor = AppTheme.TextPrimary,
+            BackColor = AppTheme.Surface,
+            Font = AppTheme.BodyFont(9.7f),
+            Margin = new Padding(0, 8, 0, 0)
+        };
+        _frameGenLowLatencyCheckBox.CheckedChanged += (_, _) =>
+        {
+            _settings.FrameGenPreferLowLatency = _frameGenLowLatencyCheckBox.Checked;
+            SaveSettings();
+            UpdateFrameGenLabStatus();
+        };
+        pipelineLayout.Controls.Add(_frameGenLowLatencyCheckBox, 0, 6);
+        pipelineLayout.SetColumnSpan(_frameGenLowLatencyCheckBox, 2);
+        pipelineCard.Controls.Add(pipelineLayout);
+
+        var researchCard = new CardPanel
+        {
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            FillColor = AppTheme.Surface,
+            BorderColor = AppTheme.Border,
+            CornerRadius = 18,
+            EnableSpotlight = false,
+            Margin = new Padding(12, 0, 0, 0),
+            InnerPadding = new Padding(18)
+        };
+        var researchLayout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            ColumnCount = 1,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            BackColor = AppTheme.Surface
+        };
+        researchLayout.Controls.Add(new Label
+        {
+            Text = "Reality Check",
+            AutoSize = true,
+            Font = AppTheme.TitleFont(13f),
+            ForeColor = AppTheme.TextPrimary,
+            Margin = new Padding(0, 0, 0, 8)
+        }, 0, 0);
+        researchLayout.Controls.Add(new Label
+        {
+            Text = "NVIDIA Streamline / DLSS Frame Generation and AMD FSR 3 Frame Generation are game-side integrations, not something CloudFrame can ethically flip on from the outside. The realistic external path is capture + interpolation + presentation, with anti-cheat titles excluded by default.",
+            AutoSize = true,
+            MaximumSize = new Size(540, 0),
+            Font = AppTheme.BodyFont(9.5f),
+            ForeColor = AppTheme.TextSecondary,
+            Margin = new Padding(0, 0, 0, 14)
+        }, 0, 1);
+        researchLayout.Controls.Add(new Label
+        {
+            Text = "Candidate roadmap",
+            AutoSize = true,
+            Font = AppTheme.CaptionFont(9.5f),
+            ForeColor = AppTheme.TextSecondary,
+            Margin = new Padding(0, 0, 0, 8)
+        }, 0, 2);
+        researchLayout.Controls.Add(new Label
+        {
+            Text = "1. Capture borderless frames externally\n2. Build a low-risk interpolation prototype\n3. Add optional NVIDIA Optical Flow acceleration\n4. Gate the whole feature behind anti-cheat and compatibility checks\n5. Benchmark latency, pacing, and visual artifacts before shipping anything public",
+            AutoSize = true,
+            MaximumSize = new Size(540, 0),
+            Font = AppTheme.BodyFont(9.5f),
+            ForeColor = AppTheme.TextPrimary
+        }, 0, 3);
+        researchLayout.Controls.Add(new Label
+        {
+            Text = "Technology fit on this rig",
+            AutoSize = true,
+            Font = AppTheme.CaptionFont(9.5f),
+            ForeColor = AppTheme.TextSecondary,
+            Margin = new Padding(0, 14, 0, 8)
+        }, 0, 4);
+        researchLayout.Controls.Add(CreateFrameGenCapabilityLabel(techReport.Dlss), 0, 5);
+        researchLayout.Controls.Add(CreateFrameGenCapabilityLabel(techReport.Fsr), 0, 6);
+        researchLayout.Controls.Add(CreateFrameGenCapabilityLabel(techReport.Xess), 0, 7);
+        researchLayout.Controls.Add(CreateFrameGenCapabilityLabel(techReport.ExternalFrameGen), 0, 8);
+        researchCard.Controls.Add(researchLayout);
+
+        workspace.Controls.Add(pipelineCard, 0, 0);
+        workspace.Controls.Add(researchCard, 1, 0);
+
+        var prototypeCard = new CardPanel
+        {
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            FillColor = AppTheme.Surface,
+            BorderColor = AppTheme.Border,
+            CornerRadius = 18,
+            EnableSpotlight = false,
+            Margin = new Padding(0, 16, 0, 0),
+            InnerPadding = new Padding(18)
+        };
+        var prototypeLayout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            ColumnCount = 1,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            BackColor = AppTheme.Surface
+        };
+        prototypeLayout.Controls.Add(new Label
+        {
+            Text = "Prototype Session Control",
+            AutoSize = true,
+            Font = AppTheme.TitleFont(13f),
+            ForeColor = AppTheme.TextPrimary,
+            Margin = new Padding(0, 0, 0, 8)
+        }, 0, 0);
+        prototypeLayout.Controls.Add(new Label
+        {
+            Text = "This is the first real step toward an external frame interpolation workflow: validate the selected game, block anti-cheat titles, and prep a clean borderless presentation path with minimal overhead.",
+            AutoSize = true,
+            MaximumSize = new Size(1120, 0),
+            Font = AppTheme.BodyFont(9.5f),
+            ForeColor = AppTheme.TextSecondary,
+            Margin = new Padding(0, 0, 0, 12)
+        }, 0, 1);
+        _frameGenEligibilityLabel = new Label
+        {
+            AutoSize = true,
+            MaximumSize = new Size(1120, 0),
+            Font = AppTheme.TitleFont(12.5f),
+            ForeColor = AppTheme.TextPrimary,
+            Margin = new Padding(0, 0, 0, 6)
+        };
+        prototypeLayout.Controls.Add(_frameGenEligibilityLabel, 0, 2);
+        _frameGenEligibilityDetailLabel = new Label
+        {
+            AutoSize = true,
+            MaximumSize = new Size(1120, 0),
+            Font = AppTheme.BodyFont(9.4f),
+            ForeColor = AppTheme.TextSecondary,
+            Margin = new Padding(0, 0, 0, 12)
+        };
+        prototypeLayout.Controls.Add(_frameGenEligibilityDetailLabel, 0, 3);
+
+        var prototypeActionFlow = new FlowLayoutPanel
+        {
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            WrapContents = true,
+            BackColor = AppTheme.Surface
+        };
+        var evaluatePrototypeButton = AppTheme.CreateButton("Evaluate Selected Game", primary: true, width: 176);
+        evaluatePrototypeButton.Click += (_, _) => UpdateFrameGenLabStatus();
+        var preparePrototypeButton = AppTheme.CreateButton("Prepare Live Window", width: 164);
+        preparePrototypeButton.Click += async (_, _) => await PrepareFrameGenPrototypeAsync();
+        var launchPrototypeButton = AppTheme.CreateButton("Launch Prototype Session", width: 186);
+        launchPrototypeButton.Click += async (_, _) => await LaunchFrameGenPrototypeAsync();
+        prototypeActionFlow.Controls.Add(evaluatePrototypeButton);
+        prototypeActionFlow.Controls.Add(preparePrototypeButton);
+        prototypeActionFlow.Controls.Add(launchPrototypeButton);
+        prototypeLayout.Controls.Add(prototypeActionFlow, 0, 4);
+        prototypeCard.Controls.Add(prototypeLayout);
+
+        root.Controls.Add(heroCard, 0, 0);
+        root.Controls.Add(workspace, 0, 1);
+        root.Controls.Add(prototypeCard, 0, 2);
+
+        void syncFrameGenLayout()
+        {
+            var availableWidth = Math.Max(920, scrollHost.ClientSize.Width - 8);
+            var cardWidth = Math.Max(420, (availableWidth - 24) / 2);
+            root.MaximumSize = new Size(availableWidth, 0);
+            root.Width = availableWidth;
+            heroCard.MaximumSize = new Size(availableWidth, 0);
+            heroCard.Width = availableWidth;
+            pipelineCard.MaximumSize = new Size(cardWidth, 0);
+            pipelineCard.Width = cardWidth;
+            researchCard.MaximumSize = new Size(cardWidth, 0);
+            researchCard.Width = cardWidth;
+            prototypeCard.MaximumSize = new Size(availableWidth, 0);
+            prototypeCard.Width = availableWidth;
+        }
+
+        scrollHost.Resize += (_, _) => syncFrameGenLayout();
+        syncFrameGenLayout();
+        _frameGenGpuSummaryLabel.Text = techReport.GpuNames.Count > 0
+            ? $"Detected GPUs: {string.Join(" | ", techReport.GpuNames)}"
+            : "Detected GPUs: CloudFrame could not identify the active GPU stack on this machine.";
+        UpdateFrameGenLabStatus();
+
+        scrollHost.Controls.Add(root);
+        tab.Controls.Add(scrollHost);
+        return tab;
+    }
+
+    private Control CreateFrameGenCapabilityLabel(TechCapability capability)
+    {
+        var panel = new FlowLayoutPanel
+        {
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            BackColor = AppTheme.Surface,
+            Margin = new Padding(0, 0, 0, 8),
+            FlowDirection = FlowDirection.TopDown,
+            WrapContents = false
+        };
+
+        var title = new Label
+        {
+            Text = $"{capability.Name}: {capability.Status}",
+            AutoSize = true,
+            Font = AppTheme.BodyFont(9.6f),
+            ForeColor = capability.Highlight ? AppTheme.AccentStrong : AppTheme.TextPrimary,
+            Margin = new Padding(0, 0, 0, 2)
+        };
+        panel.Controls.Add(title);
+
+        var detail = new Label
+        {
+            Text = capability.Detail,
+            AutoSize = true,
+            MaximumSize = new Size(540, 0),
+            Font = AppTheme.BodyFont(9.1f),
+            ForeColor = AppTheme.TextSecondary
+        };
+        panel.Controls.Add(detail);
+        return panel;
     }
 
     private CardPanel BuildReadinessCard()
@@ -3042,10 +4387,15 @@ internal sealed class MainForm : Form
     private async Task InitializeAsync()
     {
         _logger.Log("CloudFrame main window shown.");
+        _logger.Log("Startup step: UpdateStatusLabels");
         UpdateStatusLabels();
+        _logger.Log("Startup step: UpdateShaderCacheLabel");
         UpdateShaderCacheLabel();
+        _logger.Log("Startup step: RecoverPendingSessionAsync");
         await _boostCoordinator.RecoverPendingSessionAsync(_settings.Profiles);
-        ToggleOverlay(_overlayToggleCheckBox.Checked);
+        _logger.Log("Startup step: ToggleOverlay");
+        ToggleOverlay(_overlayToggleCheckBox?.Checked == true);
+        _logger.Log("Startup step: LoadPowerPlansAsync queued");
         _ = Task.Run(LoadPowerPlansAsync);
 
         await Task.Delay(120);
@@ -3055,15 +4405,20 @@ internal sealed class MainForm : Form
         }
 
         _startupReady = true;
+        _logger.Log("Startup step: UpdateAnimatedUiState");
         UpdateAnimatedUiState();
+        _logger.Log("Startup step: UpdateFpsTrackingTarget");
         UpdateFpsTrackingTarget();
+        _logger.Log("Startup step: Telemetry timer start");
         _telemetryTimer.Start();
+        _logger.Log("Startup step: ScheduleTelemetryRefresh");
         ScheduleTelemetryRefresh();
         _logger.Log("CloudFrame startup warmup complete.");
         BeginInvoke(new Action(() =>
         {
             MaybeRunFirstRunSetup();
             _ = CheckForUpdatesAsync(showUpToDateMessage: false);
+            QueueDeferredTabWarmup();
         }));
     }
 
@@ -3120,11 +4475,34 @@ internal sealed class MainForm : Form
 
     private async Task LoadPowerPlansAsync()
     {
+        var plans = await _powerPlanService.GetPlansAsync();
         _powerPlans.Clear();
-        _powerPlans.AddRange(await _powerPlanService.GetPlansAsync());
-        _powerPlanList.DataSource = null;
-        _powerPlanList.DataSource = _powerPlans;
+        _powerPlans.AddRange(plans);
+
+        if (_powerPlanList is not null && !IsDisposed && !Disposing)
+        {
+            if (InvokeRequired)
+            {
+                BeginInvoke(new Action(BindLoadedPowerPlans));
+            }
+            else
+            {
+                BindLoadedPowerPlans();
+            }
+        }
+
         RequestToolsUiRefresh();
+    }
+
+    private void BindLoadedPowerPlans()
+    {
+        if (_powerPlanList is null || _powerPlanList.IsDisposed)
+        {
+            return;
+        }
+
+        _powerPlanList.DataSource = null;
+        _powerPlanList.DataSource = _powerPlans.ToList();
     }
 
     private void BindProfiles()
@@ -3297,6 +4675,27 @@ internal sealed class MainForm : Form
         _profileStudioDirty = false;
     }
 
+    private void RefreshDashboardUiCore()
+    {
+        if (_cpuRing is not null)
+        {
+            _cpuRing.Value = (float)_latestTelemetry.CpuPercent;
+        }
+
+        if (_gpuRing is not null)
+        {
+            _gpuRing.Value = (float)(_latestTelemetry.GpuPercent ?? 0);
+        }
+
+        if (_fpsRing is not null && _latestTelemetry.FramesPerSecond is double fps)
+        {
+            _fpsRing.Value = (float)Math.Min(fps, 300);
+        }
+
+        UpdateDashboardCards();
+        _dashboardUiDirty = false;
+    }
+
     private void UpdateAnimatedUiState()
     {
         var selectedTabText = _mainTabs?.SelectedTab?.Text ?? string.Empty;
@@ -3305,13 +4704,17 @@ internal sealed class MainForm : Form
         var toolsActive = string.Equals(selectedTabText, "Tools", StringComparison.OrdinalIgnoreCase);
         _dashboardBackdropPanel?.SetAnimationEnabled(dashboardActive);
         _profileSnapshotCard?.SetAnimationEnabled(profilesActive);
+        if (dashboardActive && _dashboardUiDirty)
+        {
+            QueueDashboardUiRefresh();
+        }
         if (profilesActive && _profileStudioDirty)
         {
-            BeginInvoke(new Action(RefreshProfileStudioCardCore));
+            QueueProfileStudioRefresh();
         }
         if (toolsActive && _toolsUiDirty)
         {
-            BeginInvoke(new Action(RefreshToolsUiCore));
+            QueueToolsUiRefresh();
         }
     }
 
@@ -3320,12 +4723,15 @@ internal sealed class MainForm : Form
         _profileStudioDirty = true;
         if (IsProfilesTabActive())
         {
-            RefreshProfileStudioCardCore();
+            QueueProfileStudioRefresh();
         }
     }
 
     private bool IsProfilesTabActive()
         => string.Equals(_mainTabs?.SelectedTab?.Text, "Profiles", StringComparison.OrdinalIgnoreCase);
+
+    private bool IsDashboardTabActive()
+        => string.Equals(_mainTabs?.SelectedTab?.Text, "Dashboard", StringComparison.OrdinalIgnoreCase);
 
     private void RefreshToolsUiCore()
     {
@@ -3340,12 +4746,78 @@ internal sealed class MainForm : Form
         _toolsUiDirty = true;
         if (IsToolsTabActive())
         {
-            RefreshToolsUiCore();
+            QueueToolsUiRefresh();
         }
     }
 
     private bool IsToolsTabActive()
         => string.Equals(_mainTabs?.SelectedTab?.Text, "Tools", StringComparison.OrdinalIgnoreCase);
+
+    private bool IsResolutionTabActive()
+        => string.Equals(_mainTabs?.SelectedTab?.Text, "Resolution", StringComparison.OrdinalIgnoreCase);
+
+    private void RequestDashboardUiRefresh()
+    {
+        _dashboardUiDirty = true;
+        if (IsDashboardTabActive())
+        {
+            QueueDashboardUiRefresh();
+        }
+    }
+
+    private void QueueProfileStudioRefresh()
+    {
+        if (_profileRefreshQueued || IsDisposed || Disposing || !IsHandleCreated)
+        {
+            return;
+        }
+
+        _profileRefreshQueued = true;
+        BeginInvoke(new Action(() =>
+        {
+            _profileRefreshQueued = false;
+            if (!IsDisposed && !Disposing)
+            {
+                RefreshProfileStudioCardCore();
+            }
+        }));
+    }
+
+    private void QueueToolsUiRefresh()
+    {
+        if (_toolsRefreshQueued || IsDisposed || Disposing || !IsHandleCreated)
+        {
+            return;
+        }
+
+        _toolsRefreshQueued = true;
+        BeginInvoke(new Action(() =>
+        {
+            _toolsRefreshQueued = false;
+            if (!IsDisposed && !Disposing)
+            {
+                RefreshToolsUiCore();
+            }
+        }));
+    }
+
+    private void QueueDashboardUiRefresh()
+    {
+        if (_dashboardRefreshQueued || IsDisposed || Disposing || !IsHandleCreated)
+        {
+            return;
+        }
+
+        _dashboardRefreshQueued = true;
+        BeginInvoke(new Action(() =>
+        {
+            _dashboardRefreshQueued = false;
+            if (!IsDisposed && !Disposing)
+            {
+                RefreshDashboardUiCore();
+            }
+        }));
+    }
 
     private void ApplyToolsPreset(
         AppThemePreset themePreset,
@@ -3402,6 +4874,7 @@ internal sealed class MainForm : Form
     {
         var advanced = _advancedViewCheckBox?.Checked == true;
         if (_dashboardGaugePanel is not null) _dashboardGaugePanel.Visible = advanced;
+        if (_dashboardPerformanceLabPanel is not null) _dashboardPerformanceLabPanel.Visible = advanced;
         if (_dashboardSessionReportPanel is not null) _dashboardSessionReportPanel.Visible = advanced;
         if (_dashboardRecommendationPanel is not null) _dashboardRecommendationPanel.Visible = advanced;
         if (_dashboardLogGroup is not null) _dashboardLogGroup.Visible = advanced;
@@ -3455,6 +4928,7 @@ internal sealed class MainForm : Form
         }
 
         _isCheckingForUpdates = true;
+        SetTransientExperienceStatus("Checking for updates from the CloudFrame release feed...", context: "Updates", durationMs: 1800);
         try
         {
             var result = await _updateCheckerService.CheckForUpdateAsync(
@@ -3463,6 +4937,7 @@ internal sealed class MainForm : Form
 
             if (result.IsUpdateAvailable)
             {
+                SetTransientExperienceStatus($"CloudFrame {result.LatestVersion} is ready to review.", context: "Updates");
                 ShowUpdatePrompt(result);
                 return;
             }
@@ -3473,6 +4948,7 @@ internal sealed class MainForm : Form
             }
 
             _logger.Log(result.Message);
+            SetTransientExperienceStatus(result.Message, context: "Updates");
         }
         finally
         {
@@ -3493,15 +4969,18 @@ internal sealed class MainForm : Form
             case UpdatePromptChoice.OpenRelease:
                 OpenExternalPath(result.ReleaseUrl);
                 _logger.Log($"Opened CloudFrame release page for {result.LatestVersion}.");
+                SetTransientExperienceStatus($"Opened the CloudFrame {result.LatestVersion} release page.", context: "Updates");
                 break;
             case UpdatePromptChoice.SkipVersion:
                 _settings.SkippedUpdateVersion = result.LatestVersion;
                 SaveSettings();
                 _logger.Log($"Skipped update prompt for CloudFrame {result.LatestVersion}.");
+                SetTransientExperienceStatus($"CloudFrame {result.LatestVersion} will be skipped until a newer release appears.", context: "Updates");
                 break;
             case UpdatePromptChoice.Later:
             default:
                 _logger.Log($"Deferred update prompt for CloudFrame {result.LatestVersion}.");
+                SetTransientExperienceStatus($"CloudFrame {result.LatestVersion} was left for later.", context: "Updates");
                 break;
         }
     }
@@ -3599,7 +5078,7 @@ internal sealed class MainForm : Form
         _settings.HasCompletedFirstRunSetup = true;
         SaveSettings();
         BindProfiles();
-        ManualScanNow();
+        _ = ManualScanNowAsync();
         _logger.Log($"Created {dialog.ProfilesToCreate.Count} starter profile(s) from the first-run setup.");
     }
 
@@ -3617,36 +5096,110 @@ internal sealed class MainForm : Form
         OpenExternalPath(reportPath);
     }
 
-    private void ManualScanNow()
+    private void CopyPerformanceLabSnapshot()
     {
-        if (_settings.Profiles.Count == 0)
+        var delta = _fpsComparisonTracker.GetSnapshot();
+        var lines = new List<string>
         {
-            _logger.Log("No game profiles are configured yet. Add a profile first from the Profiles tab.");
+            "CloudFrame Performance Lab Snapshot",
+            $"Captured: {DateTime.Now:G}",
+            $"Selected profile: {SelectedProfile?.Name ?? "None"}",
+            $"Active session: {_boostCoordinator.ActiveSession?.Profile.Name ?? "None"}"
+        };
+
+        lines.Add(delta.BaselineMetrics is not null
+            ? $"Baseline: {FormatPerformanceMetrics(delta.BaselineMetrics.Value)}"
+            : "Baseline: waiting for enough profiled-game idle samples.");
+
+        if (delta.LiveMetrics is not null)
+        {
+            lines.Add($"Live: {FormatPerformanceMetrics(delta.LiveMetrics.Value)}");
+            lines.Add($"Session quality: {DescribePacing(delta.LiveMetrics.Value.PacingScore)} | Avg frame time {delta.LiveMetrics.Value.AverageFrameTimeMs:0.00} ms | P95 {delta.LiveMetrics.Value.P95FrameTimeMs:0.00} ms");
+        }
+        else
+        {
+            lines.Add("Live: waiting for enough boosted-session samples.");
+        }
+
+        if (delta.HasResult)
+        {
+            var avgSign = (delta.DeltaPercent ?? 0) >= 0 ? "+" : string.Empty;
+            var lowSign = (delta.DeltaOnePercentLowFps ?? 0) >= 0 ? "+" : string.Empty;
+            lines.Add($"Measured delta: {avgSign}{delta.DeltaPercent:0.#}% avg | {lowSign}{delta.DeltaOnePercentLowFps:0.#} FPS 1% low");
+        }
+
+        if (_lastSessionReport is not null)
+        {
+            lines.Add($"Last session: {_lastSessionReport.ProfileName} | {_lastSessionReport.Summary}");
+        }
+
+        try
+        {
+            Clipboard.SetText(string.Join(Environment.NewLine, lines));
+            SetTransientExperienceStatus("Performance Lab snapshot copied to the clipboard.", context: "Performance Lab");
+        }
+        catch (Exception ex)
+        {
+            _logger.Log($"Failed to copy Performance Lab snapshot: {ex.Message}");
+            SetTransientExperienceStatus($"CloudFrame could not copy the Performance Lab snapshot: {ex.Message}", warning: true, context: "Performance Lab");
+        }
+    }
+
+    private async Task ManualScanNowAsync()
+    {
+        _logger.Log("Manual process scan started.");
+        SetTransientExperienceStatus("Scanning live running processes from your current Windows session...", context: "Dashboard scan", durationMs: 2200);
+
+        IReadOnlyList<RunningProcessEntry> entries;
+        try
+        {
+            entries = await Task.Run(() => _windowResolutionService.ListDashboardProcesses());
+        }
+        catch (Exception ex)
+        {
+            _logger.Log($"Manual process scan failed: {ex.Message}");
+            SetTransientExperienceStatus($"CloudFrame could not scan running processes: {ex.Message}", warning: true, context: "Dashboard scan");
             return;
         }
 
-        _logger.Log("Manual scan started.");
-        _detectionService.ForceScan();
+        _scannedProcesses.Clear();
+        _scannedProcesses.AddRange(entries);
+
+        _logger.Log($"Manual process scan collected {_scannedProcesses.Count} process candidate(s).");
         UpdateStatusLabels();
+        RefreshDetectedGrid();
+
+        if (_scannedProcesses.Count == 0)
+        {
+            SetTransientExperienceStatus("No runnable user-session processes were found. Launch an app first, then scan again.", warning: true, context: "Dashboard scan");
+            return;
+        }
+
+        var matchedCount = BuildDashboardScanEntries(string.Empty).Count(static entry => entry.HasProfileMatch);
+        SetTransientExperienceStatus(
+            $"Scanned {_scannedProcesses.Count} live process(es). {matchedCount} matched a saved CloudFrame profile; everything else is ready for universal quick boost.",
+            context: "Dashboard scan");
     }
 
     private void ClearDetectedMatches()
     {
         _detectedGames.Clear();
-        _logger.Log("Cleared running matches from the dashboard.");
+        _scannedProcesses.Clear();
+        _logger.Log("Cleared scanned processes and running matches from the dashboard.");
         UpdateStatusLabels();
         RefreshDetectedGrid();
     }
 
     private async Task BoostSelectedGameAsync()
     {
-        if (_detectedGrid.CurrentRow?.Tag is not DetectedGame detectedGame)
+        if (_detectedGrid.CurrentRow?.Tag is not DashboardScanEntry selectedEntry)
         {
-            MessageBox.Show(this, "Select a running match first.", "CloudFrame", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            MessageBox.Show(this, "Select a scanned process first.", "CloudFrame", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
 
-        var result = await _boostCoordinator.ApplyBoostAsync(detectedGame.Profile, detectedGame.BoostProcessId, false);
+        var boostProfile = selectedEntry.Profile ?? CreateUniversalBoostProfile();
+        var result = await _boostCoordinator.ApplyBoostAsync(boostProfile, selectedEntry.BoostProcessId, false);
         _logger.Log(result.Message);
         UpdateStatusLabels();
         RefreshDetectedGrid();
@@ -3971,7 +5524,7 @@ internal sealed class MainForm : Form
         _logger.Log(closedCount == 0
             ? $"No listed background apps closed for '{profile.Name}'."
             : $"Gracefully closed {closedCount} listed background app instance(s) for '{profile.Name}'.");
-        ManualScanNow();
+        _ = ManualScanNowAsync();
     }
 
     private void HandleLogMessage(string message)
@@ -4010,30 +5563,158 @@ internal sealed class MainForm : Form
         _detectedGrid.Rows.Clear();
 
         var filter = _detectedFilterTextBox.Text.Trim();
-        var matches = _detectedGames.Where(game => MatchesDetectedGameFilter(game, filter));
+        var entries = BuildDashboardScanEntries(filter);
+        UpdateDashboardScanSummary(entries, filter);
 
-        foreach (var game in matches)
+        foreach (var entry in entries)
         {
-            var status = _boostCoordinator.ActiveSession?.RecoveryState.GameProcessId == game.ProcessId
-                ? BuildSessionStatus(_boostCoordinator.ActiveSession)
-                : game.HasLauncherHandoff
-                    ? $"Detected / via {game.AnchorProcessName ?? "launcher"}"
-                    : "Detected / ready";
+            var rowIndex = _detectedGrid.Rows.Add(
+                entry.DisplayProfileName,
+                entry.ProcessName,
+                entry.ProcessId,
+                entry.Status,
+                entry.ExecutablePath);
 
-            if (!string.IsNullOrWhiteSpace(game.EngineHint))
+            _detectedGrid.Rows[rowIndex].Tag = entry;
+        }
+    }
+
+    private void UpdateDashboardScanSummary(IReadOnlyList<DashboardScanEntry> entries, string filter)
+    {
+        if (_dashboardScanSummaryLabel is null)
+        {
+            return;
+        }
+
+        if (_scannedProcesses.Count == 0)
+        {
+            _dashboardScanSummaryLabel.Text = "Press Scan Now to inspect live running processes. Saved profiles help, but they are optional for a quick boost.";
+            _dashboardScanSummaryLabel.ForeColor = AppTheme.TextSecondary;
+            return;
+        }
+
+        var matchedCount = entries.Count(static entry => entry.HasProfileMatch);
+        var visibleCount = _scannedProcesses.Count(static process => process.HasVisibleWindow);
+        var groupedCount = entries.Count;
+        var rawCount = _scannedProcesses.Count;
+
+        if (entries.Count == 0)
+        {
+            _dashboardScanSummaryLabel.Text = string.IsNullOrWhiteSpace(filter)
+                ? "CloudFrame completed the scan, but nothing from the current Windows session could be listed. Try again after launching the target app."
+                : $"No scanned processes matched the current filter \"{filter}\".";
+            _dashboardScanSummaryLabel.ForeColor = AppTheme.Warning;
+            return;
+        }
+
+        var visibilityText = visibleCount > 0
+            ? $"{visibleCount} with live windows"
+            : "background-only process entries";
+
+        _dashboardScanSummaryLabel.Text = $"Showing {groupedCount} grouped process{(groupedCount == 1 ? string.Empty : "es")} from {rawCount} running process{(rawCount == 1 ? string.Empty : "es")} | {matchedCount} matched profile{(matchedCount == 1 ? string.Empty : "s")} | {visibilityText}.";
+        _dashboardScanSummaryLabel.ForeColor = entries.Count > 0 ? AppTheme.Success : AppTheme.AccentSoft;
+    }
+
+    private List<DashboardScanEntry> BuildDashboardScanEntries(string filter)
+    {
+        var entries = new List<DashboardScanEntry>(_scannedProcesses.Count);
+        foreach (var group in _scannedProcesses
+                     .GroupBy(static process => BuildDashboardProcessGroupKey(process), StringComparer.OrdinalIgnoreCase))
+        {
+            var process = group
+                .OrderByDescending(static candidate => candidate.HasVisibleWindow)
+                .ThenByDescending(static candidate => !string.IsNullOrWhiteSpace(candidate.WindowTitle))
+                .ThenByDescending(static candidate => candidate.ProcessId)
+                .First();
+            var instanceCount = group.Count();
+            var matchedGame = FindDetectedGameForProcess(process);
+            var profile = matchedGame?.Profile ?? FindExactProfileForProcess(process);
+            var status = BuildDashboardScanStatus(process, matchedGame, profile);
+            var engineHint = matchedGame?.EngineHint
+                ?? (profile is not null ? _processService.GetEngineHint(profile, process.ExecutablePath, process.ProcessName) : null);
+
+            var entry = new DashboardScanEntry
             {
-                status += $" / {game.EngineHint}";
+                Profile = profile,
+                MatchedGame = matchedGame,
+                ProcessId = matchedGame?.ProcessId ?? process.ProcessId,
+                ProcessName = matchedGame?.ProcessName ?? process.ProcessName,
+                WindowTitle = process.WindowTitle,
+                ExecutablePath = matchedGame?.ExecutablePath ?? process.ExecutablePath,
+                EngineHint = engineHint,
+                Status = instanceCount > 1 ? $"{status} / {instanceCount} instances" : status,
+                InstanceCount = instanceCount
+            };
+
+            if (MatchesDashboardScanEntryFilter(entry, filter))
+            {
+                entries.Add(entry);
+            }
+        }
+
+        return entries
+            .OrderByDescending(static entry => entry.HasProfileMatch)
+            .ThenBy(static entry => entry.DisplayProfileName, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(static entry => entry.ProcessName, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private static string BuildDashboardProcessGroupKey(RunningProcessEntry process)
+    {
+        if (!string.IsNullOrWhiteSpace(process.ExecutablePath))
+        {
+            return process.ExecutablePath;
+        }
+
+        return process.ProcessName;
+    }
+
+    private DetectedGame? FindDetectedGameForProcess(RunningProcessEntry process)
+    {
+        return _detectedGames.FirstOrDefault(game =>
+            game.ProcessId == process.ProcessId
+            || game.AnchorProcessId == process.ProcessId
+            || (!string.IsNullOrWhiteSpace(game.ExecutablePath)
+                && string.Equals(game.ExecutablePath, process.ExecutablePath, StringComparison.OrdinalIgnoreCase))
+            || string.Equals(game.ProcessName, process.ProcessName, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private GameProfile? FindExactProfileForProcess(RunningProcessEntry process)
+    {
+        return _settings.Profiles.FirstOrDefault(profile =>
+            !string.IsNullOrWhiteSpace(profile.ExecutablePath)
+            && string.Equals(profile.ExecutablePath, process.ExecutablePath, StringComparison.OrdinalIgnoreCase))
+            ?? _settings.Profiles.FirstOrDefault(profile =>
+                !string.IsNullOrWhiteSpace(profile.ExecutableName)
+                && string.Equals(profile.ExecutableName, process.ProcessName, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private string BuildDashboardScanStatus(RunningProcessEntry process, DetectedGame? matchedGame, GameProfile? profile)
+    {
+        if (matchedGame is not null)
+        {
+            var status = _boostCoordinator.ActiveSession?.RecoveryState.GameProcessId == matchedGame.ProcessId
+                ? BuildSessionStatus(_boostCoordinator.ActiveSession)
+                : matchedGame.HasLauncherHandoff
+                    ? $"Matched / via {matchedGame.AnchorProcessName ?? "launcher"}"
+                    : "Matched / ready";
+
+            if (!string.IsNullOrWhiteSpace(matchedGame.EngineHint))
+            {
+                status += $" / {matchedGame.EngineHint}";
             }
 
-            var rowIndex = _detectedGrid.Rows.Add(
-                game.Profile.Name,
-                game.ProcessName,
-                game.ProcessId,
-                status,
-                game.ExecutablePath ?? game.Profile.ExecutablePath);
-
-            _detectedGrid.Rows[rowIndex].Tag = game;
+            return status;
         }
+
+        if (profile is not null)
+        {
+            return "Profile match / ready to boost";
+        }
+
+        return string.IsNullOrWhiteSpace(process.WindowTitle)
+            ? "Ready / universal boost"
+            : $"Ready / universal boost / {process.WindowTitle}";
     }
 
     private void UpdateStatusLabels()
@@ -4062,8 +5743,78 @@ internal sealed class MainForm : Form
         SyncBoostControlState();
         SyncPresetCardSelection();
         RequestProfileStudioRefresh();
-        UpdateDashboardCards();
+        RequestDashboardUiRefresh();
         RequestToolsUiRefresh();
+        UpdateFrameGenLabStatus();
+        UpdateExperienceStatusFromState();
+    }
+
+    private void UpdateExperienceStatusFromState()
+    {
+        if (_experienceStatusTitleLabel is null || _experienceStatusDetailLabel is null || _experienceStatusContextLabel is null)
+        {
+            return;
+        }
+
+        if (!string.IsNullOrWhiteSpace(_transientExperienceMessage))
+        {
+            _experienceStatusTitleLabel.Text = _transientExperienceWarning ? "Needs attention" : "Action complete";
+            _experienceStatusTitleLabel.ForeColor = _transientExperienceWarning ? AppTheme.Warning : AppTheme.Success;
+            _experienceStatusDetailLabel.Text = _transientExperienceMessage;
+            _experienceStatusDetailLabel.ForeColor = _transientExperienceWarning ? AppTheme.TextPrimary : AppTheme.TextSecondary;
+            _experienceStatusContextLabel.Text = string.IsNullOrWhiteSpace(_transientExperienceContext)
+                ? BuildExperienceContext()
+                : _transientExperienceContext!;
+            return;
+        }
+
+        var session = _boostCoordinator.ActiveSession;
+        var selectedProfile = SelectedProfile;
+        if (session is not null)
+        {
+            _experienceStatusTitleLabel.Text = session.RecoveryState.IsPreLaunchBoost
+                ? "Universal boost armed"
+                : $"Boosting {session.Profile.Name}";
+            _experienceStatusTitleLabel.ForeColor = AppTheme.Success;
+            _experienceStatusDetailLabel.Text = session.RecoveryState.IsPreLaunchBoost
+                ? "CloudFrame is holding your preferred boost posture and waiting for the actual game launch."
+                : "CloudFrame is actively maintaining the live session with the current profile and safety rules.";
+        }
+        else if (selectedProfile is not null)
+        {
+            _experienceStatusTitleLabel.Text = $"{selectedProfile.Name} ready";
+            _experienceStatusTitleLabel.ForeColor = AppTheme.TextPrimary;
+            _experienceStatusDetailLabel.Text = "The selected profile is loaded and ready for boost, launch, resolution control, and prototype testing.";
+        }
+        else
+        {
+            _experienceStatusTitleLabel.Text = "CloudFrame ready";
+            _experienceStatusTitleLabel.ForeColor = AppTheme.TextPrimary;
+            _experienceStatusDetailLabel.Text = "Pick a profile, scan a running game, or use a quick action to start shaping the session.";
+        }
+
+        _experienceStatusDetailLabel.ForeColor = AppTheme.TextSecondary;
+        _experienceStatusContextLabel.Text = BuildExperienceContext();
+    }
+
+    private string BuildExperienceContext()
+    {
+        var profileName = SelectedProfile?.Name ?? "none";
+        var monitoring = _settings.MonitoringMode.ToString();
+        var overlay = _overlayToggleCheckBox?.Checked == true ? "overlay on" : "overlay off";
+        return $"Profile: {profileName} | Monitoring: {monitoring} | {overlay}";
+    }
+
+    private void SetTransientExperienceStatus(string message, bool warning = false, string? context = null, int durationMs = 4200)
+    {
+        _transientExperienceMessage = message;
+        _transientExperienceContext = context;
+        _transientExperienceWarning = warning;
+        UpdateExperienceStatusFromState();
+
+        _experienceStatusTimer.Stop();
+        _experienceStatusTimer.Interval = Math.Max(1200, durationMs);
+        _experienceStatusTimer.Start();
     }
 
     private void UpdateReadinessDiagnostics()
@@ -4228,6 +5979,11 @@ internal sealed class MainForm : Form
 
     private void UpdateShaderCacheLabel()
     {
+        if (_shaderCacheLabel is null || _shaderCacheLabel.IsDisposed)
+        {
+            return;
+        }
+
         var sizeBytes = _shaderCacheService.GetCacheSizeBytes();
         _shaderCacheLabel.Text = $"DirectX shader cache: {_shaderCacheService.CacheDirectory} ({FormatBytes(sizeBytes)})";
     }
@@ -4405,6 +6161,289 @@ internal sealed class MainForm : Form
             .ToList();
     }
 
+    private async Task RefreshResolutionProcessesAsync()
+    {
+        if (_resolutionProcessComboBox is null || _resolutionWindowComboBox is null)
+        {
+            return;
+        }
+
+        SetResolutionStatus("Scanning visible windows...");
+        IReadOnlyList<RunningProcessEntry> entries;
+        try
+        {
+            entries = await Task.Run(() => _windowResolutionService.ListWindowedProcesses());
+        }
+        catch (Exception ex)
+        {
+            SetResolutionStatus($"Could not scan running windows: {ex.Message}", isError: true);
+            return;
+        }
+
+        _resolutionProcessComboBox.BeginUpdate();
+        try
+        {
+            _resolutionProcessComboBox.DataSource = null;
+            _resolutionProcessComboBox.DisplayMember = nameof(RunningProcessEntry.ProcessName);
+            _resolutionProcessComboBox.DataSource = entries.ToList();
+        }
+        finally
+        {
+            _resolutionProcessComboBox.EndUpdate();
+        }
+
+        if (_resolutionProcessComboBox.Items.Count > 0)
+        {
+            _resolutionProcessComboBox.SelectedIndex = 0;
+            RefreshResolutionWindowChoices();
+            SetResolutionStatus($"Found {_resolutionProcessComboBox.Items.Count} windowed app(s).");
+        }
+        else
+        {
+            _resolutionWindowComboBox.DataSource = null;
+            SetResolutionStatus("No visible top-level windows were found. Launch a game or app first.", isError: true);
+        }
+    }
+
+    private void RefreshResolutionWindowChoices()
+    {
+        if (_resolutionProcessComboBox?.SelectedItem is not RunningProcessEntry entry || _resolutionWindowComboBox is null)
+        {
+            return;
+        }
+
+        var windows = _windowResolutionService.ListWindowsForProcess(entry.ProcessId).ToList();
+        _resolutionWindowComboBox.BeginUpdate();
+        try
+        {
+            _resolutionWindowComboBox.DataSource = null;
+            _resolutionWindowComboBox.DisplayMember = nameof(WindowTargetEntry.WindowTitle);
+            _resolutionWindowComboBox.DataSource = windows;
+        }
+        finally
+        {
+            _resolutionWindowComboBox.EndUpdate();
+        }
+
+        if (_resolutionWindowComboBox.Items.Count > 0)
+        {
+            _resolutionWindowComboBox.SelectedIndex = 0;
+            SyncResolutionSizeFromSelection();
+        }
+    }
+
+    private void ApplyResolutionPresetSelection()
+    {
+        if (_resolutionPresetComboBox is null ||
+            _resolutionWidthInput is null ||
+            _resolutionHeightInput is null ||
+            _resolutionPresetComboBox.SelectedItem is not string preset ||
+            string.Equals(preset, "Custom", StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        var parts = preset.Split('x', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length != 2 ||
+            !int.TryParse(parts[0], out var width) ||
+            !int.TryParse(parts[1], out var height))
+        {
+            return;
+        }
+
+        _resolutionWidthInput.Value = Math.Clamp(width, (int)_resolutionWidthInput.Minimum, (int)_resolutionWidthInput.Maximum);
+        _resolutionHeightInput.Value = Math.Clamp(height, (int)_resolutionHeightInput.Minimum, (int)_resolutionHeightInput.Maximum);
+    }
+
+    private void SyncResolutionSizeFromSelection()
+    {
+        if (_resolutionWindowComboBox?.SelectedItem is not WindowTargetEntry window ||
+            _resolutionWidthInput is null ||
+            _resolutionHeightInput is null)
+        {
+            return;
+        }
+
+        if (_windowResolutionService.TryGetWindowBounds(window.Handle, out var bounds, out _))
+        {
+            _resolutionWidthInput.Value = Math.Clamp(bounds.Width, (int)_resolutionWidthInput.Minimum, (int)_resolutionWidthInput.Maximum);
+            _resolutionHeightInput.Value = Math.Clamp(bounds.Height, (int)_resolutionHeightInput.Minimum, (int)_resolutionHeightInput.Maximum);
+            _resolutionPresetComboBox.SelectedItem = "Custom";
+            SetResolutionStatus($"Loaded current size {bounds.Width} x {bounds.Height} for {window.ProcessName}.");
+        }
+    }
+
+    private async Task ApplyResolutionLayoutAsync()
+    {
+        if (_resolutionWindowComboBox?.SelectedItem is not WindowTargetEntry window ||
+            _resolutionWidthInput is null ||
+            _resolutionHeightInput is null ||
+            _resolutionBorderlessCheckBox is null)
+        {
+            MessageBox.Show(this, "Pick a running window first.", "CloudFrame", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        Enabled = false;
+        Cursor = Cursors.WaitCursor;
+        try
+        {
+            var width = (int)_resolutionWidthInput.Value;
+            var height = (int)_resolutionHeightInput.Value;
+            var borderless = _resolutionBorderlessCheckBox.Checked;
+
+            var success = await Task.Run(() =>
+                _windowResolutionService.TryApplyWindowLayout(window.Handle, width, height, borderless, out var error)
+                    ? (Success: true, Error: string.Empty)
+                    : (Success: false, Error: error ?? "CloudFrame could not change that window."));
+
+            if (!success.Success)
+            {
+                SetResolutionStatus(success.Error, isError: true);
+                MessageBox.Show(this, success.Error, "CloudFrame Resolution Control", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            var borderText = borderless ? " with borderless enabled" : string.Empty;
+            SetResolutionStatus($"Applied {width} x {height}{borderText} to {window.ProcessName}.");
+            _logger.Log($"Applied resolution {width}x{height} to '{window.WindowTitle}' ({window.ProcessName}). Borderless: {borderless}.");
+        }
+        finally
+        {
+            Enabled = true;
+            Cursor = Cursors.Default;
+        }
+    }
+
+    private void RestoreSelectedWindowBorder()
+    {
+        if (_resolutionWindowComboBox?.SelectedItem is not WindowTargetEntry window)
+        {
+            MessageBox.Show(this, "Pick a running window first.", "CloudFrame", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        if (!_windowResolutionService.TryRestoreWindowBorder(window.Handle, out var error))
+        {
+            SetResolutionStatus(error ?? "CloudFrame could not restore the window border.", isError: true);
+            MessageBox.Show(this, error ?? "CloudFrame could not restore the window border.", "CloudFrame Resolution Control", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        SetResolutionStatus($"Restored the standard window frame for {window.ProcessName}.");
+        _logger.Log($"Restored window border for '{window.WindowTitle}' ({window.ProcessName}).");
+    }
+
+    private void SetResolutionStatus(string message, bool isError = false)
+    {
+        if (_resolutionStatusLabel is null)
+        {
+            return;
+        }
+
+        _resolutionStatusLabel.Text = message;
+        _resolutionStatusLabel.ForeColor = isError ? AppTheme.Warning : AppTheme.TextSecondary;
+        SetTransientExperienceStatus(message, warning: isError, context: "Resolution Control");
+    }
+
+    private void UpdateFrameGenLabStatus()
+    {
+        if (_frameGenStatusLabel is null)
+        {
+            return;
+        }
+
+        var report = _frameGenPrototypeService.Evaluate(SelectedProfile, _boostCoordinator.ActiveSession, _settings);
+
+        if (!_settings.EnableExperimentalFrameGen)
+        {
+            _frameGenStatusLabel.Text = report.IsBlocked
+                ? $"Lab disabled. Current selection is blocked: {report.Summary}"
+                : "Lab disabled. CloudFrame is staying on safe monitoring-only behavior, but the selected title is still being evaluated for a future external interpolation path.";
+            _frameGenStatusLabel.ForeColor = AppTheme.TextSecondary;
+        }
+        else
+        {
+            var antiCheatGuard = _settings.FrameGenDisableOnAntiCheat
+                ? "anti-cheat guard on"
+                : "anti-cheat guard off";
+            var latencyMode = _settings.FrameGenPreferLowLatency
+                ? "latency-first"
+                : "throughput-first";
+            var borderMode = _settings.FrameGenRequireBorderless
+                ? "borderless required"
+                : "window mode flexible";
+
+            _frameGenStatusLabel.Text = $"Experimental lab armed: {_settings.FrameGenCaptureMode} capture, {_settings.FrameGenBackend} backend, {borderMode}, {latencyMode}, {antiCheatGuard}. No synthetic frames are injected yet.";
+            _frameGenStatusLabel.ForeColor = AppTheme.Warning;
+        }
+
+        if (_frameGenEligibilityLabel is null || _frameGenEligibilityDetailLabel is null)
+        {
+            return;
+        }
+
+        _frameGenEligibilityLabel.Text = report.Summary;
+        _frameGenEligibilityLabel.ForeColor = report.IsBlocked
+            ? AppTheme.Warning
+            : report.CanPrepareLiveWindow
+                ? AppTheme.Success
+                : AppTheme.AccentStrong;
+        _frameGenEligibilityDetailLabel.Text = report.Detail;
+    }
+
+    private async Task PrepareFrameGenPrototypeAsync()
+    {
+        if (!_settings.EnableExperimentalFrameGen)
+        {
+            MessageBox.Show(
+                this,
+                "Enable the Frame Gen Lab first if you want CloudFrame to prep a live prototype window.",
+                "CloudFrame Frame Gen Lab",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+            return;
+        }
+
+        var report = _frameGenPrototypeService.Evaluate(SelectedProfile, _boostCoordinator.ActiveSession, _settings);
+        var result = await _frameGenPrototypeService.PrepareLiveWindowAsync(report, _settings);
+        _logger.Log($"Frame Gen Lab prepare: {result.Message}");
+        MessageBox.Show(
+            this,
+            result.Message,
+            "CloudFrame Frame Gen Lab",
+            MessageBoxButtons.OK,
+            result.Success ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
+        SetTransientExperienceStatus(result.Message, warning: !result.Success, context: "Frame Gen Lab");
+        UpdateFrameGenLabStatus();
+    }
+
+    private async Task LaunchFrameGenPrototypeAsync()
+    {
+        if (!_settings.EnableExperimentalFrameGen)
+        {
+            MessageBox.Show(
+                this,
+                "Enable the Frame Gen Lab first if you want CloudFrame to launch a prototype frame-generation session.",
+                "CloudFrame Frame Gen Lab",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+            return;
+        }
+
+        var report = _frameGenPrototypeService.Evaluate(SelectedProfile, _boostCoordinator.ActiveSession, _settings);
+        var result = await _frameGenPrototypeService.LaunchPrototypeSessionAsync(report, _settings);
+        _logger.Log($"Frame Gen Lab launch: {result.Message}");
+        MessageBox.Show(
+            this,
+            result.Message,
+            "CloudFrame Frame Gen Lab",
+            MessageBoxButtons.OK,
+            result.Success ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
+        SetTransientExperienceStatus(result.Message, warning: !result.Success, context: "Frame Gen Lab");
+        UpdateFrameGenLabStatus();
+    }
+
     private List<DetectedGame> FindMatchesForProfile(GameProfile profile)
     {
         var matches = new Dictionary<int, DetectedGame>();
@@ -4545,17 +6584,19 @@ internal sealed class MainForm : Form
             : "Boost active";
     }
 
-    private static bool MatchesDetectedGameFilter(DetectedGame game, string filter)
+    private static bool MatchesDashboardScanEntryFilter(DashboardScanEntry entry, string filter)
     {
         if (string.IsNullOrWhiteSpace(filter))
         {
             return true;
         }
 
-        return game.Profile.Name.Contains(filter, StringComparison.OrdinalIgnoreCase)
-            || game.ProcessName.Contains(filter, StringComparison.OrdinalIgnoreCase)
-            || (game.ExecutablePath?.Contains(filter, StringComparison.OrdinalIgnoreCase) ?? false)
-            || game.Profile.ExecutablePath.Contains(filter, StringComparison.OrdinalIgnoreCase);
+        return entry.DisplayProfileName.Contains(filter, StringComparison.OrdinalIgnoreCase)
+            || entry.ProcessName.Contains(filter, StringComparison.OrdinalIgnoreCase)
+            || entry.ProcessId.ToString().Contains(filter, StringComparison.OrdinalIgnoreCase)
+            || entry.Status.Contains(filter, StringComparison.OrdinalIgnoreCase)
+            || entry.ExecutablePath.Contains(filter, StringComparison.OrdinalIgnoreCase)
+            || entry.WindowTitle.Contains(filter, StringComparison.OrdinalIgnoreCase);
     }
 
     private void HandleActiveSessionChanged(ActiveBoostSession? session)
@@ -4596,7 +6637,13 @@ internal sealed class MainForm : Form
             Summary = resultLabel,
             Detail = detail,
             ResultLabel = delta.HasResult ? "Measured gain" : "Session summary",
-            HasMeasuredGain = delta.HasResult
+            HasMeasuredGain = delta.HasResult,
+            BaselineAverageFps = delta.BaselineMetrics?.AverageFps,
+            LiveAverageFps = delta.LiveMetrics?.AverageFps,
+            BaselineOnePercentLowFps = delta.BaselineMetrics?.OnePercentLowFps,
+            LiveOnePercentLowFps = delta.LiveMetrics?.OnePercentLowFps,
+            BaselinePacingScore = delta.BaselineMetrics?.PacingScore,
+            LivePacingScore = delta.LiveMetrics?.PacingScore
         };
 
         SaveRecommendationMemory(session.Profile, _currentRecommendation);
@@ -4762,6 +6809,7 @@ internal sealed class MainForm : Form
                 CpuPercent = cpuTask.Result,
                 GpuPercent = shouldSampleGpu ? _lastGpuTelemetry : _lastGpuTelemetry,
                 FramesPerSecond = _presentMonFpsService.LatestFps,
+                FrameTimeMs = _presentMonFpsService.LatestFrameTimeMs,
                 FpsStatus = _presentMonFpsService.Status,
                 TargetProcessId = hasLiveSession
                     ? session!.RecoveryState.GameProcessId
@@ -4817,6 +6865,13 @@ internal sealed class MainForm : Form
     private bool IsBaselineEligible(bool hasLiveSession)
     {
         return hasLiveSession || _lastKnownForegroundTarget?.IsProfiledGame == true;
+    }
+
+    private void HandlePresentMonSampleCaptured(FpsFrameSample sample)
+    {
+        var session = _boostCoordinator.ActiveSession;
+        var baselineEligible = IsBaselineEligible(session is not null && !session.RecoveryState.IsPreLaunchBoost);
+        _fpsComparisonTracker.ObserveFrameSample(sample, session, baselineEligible);
     }
 
     private FpsTrackingTarget? ResolveForegroundFpsTarget()
@@ -4890,19 +6945,7 @@ internal sealed class MainForm : Form
         _statusLabelThrottleCounter++;
         if (_statusLabelThrottleCounter % 5 == 0)
         {
-        RequestProfileStudioRefresh();
-        }
-
-        // Update live stat rings
-        if (_cpuRing is not null)
-            _cpuRing.Value = (float)telemetry.CpuPercent;
-        if (_gpuRing is not null)
-            _gpuRing.Value = (float)(telemetry.GpuPercent ?? 0);
-        if (_fpsRing is not null)
-        {
-            if (telemetry.FramesPerSecond is double fps)
-                _fpsRing.Value = (float)Math.Min(fps, 300);
-            // else ring holds last value, which is fine
+            RequestProfileStudioRefresh();
         }
 
         if (ShouldDisplayOverlay(telemetry))
@@ -4919,7 +6962,7 @@ internal sealed class MainForm : Form
             _overlayForm?.Hide();
         }
 
-        UpdateDashboardCards();
+        RequestDashboardUiRefresh();
     }
 
     private void RefreshTelemetry() => ScheduleTelemetryRefresh();
@@ -5111,6 +7154,51 @@ internal sealed class MainForm : Form
             delta.HasResult
                 ? (delta.DeltaPercent ?? 0) >= 0 ? AppTheme.Success : AppTheme.Warning
                 : AppTheme.AccentStrong);
+
+        if (_performanceLabSummaryLabel is not null
+            && _performanceLabBaselineLabel is not null
+            && _performanceLabLiveLabel is not null
+            && _performanceLabPacingLabel is not null)
+        {
+            var baselineMetrics = delta.BaselineMetrics;
+            var liveMetrics = delta.LiveMetrics;
+
+            if (session is not null && liveMetrics is not null)
+            {
+                _performanceLabSummaryLabel.Text = $"Live benchmark signal for {session.Profile.Name}: {liveMetrics.Value.AverageFps:0.#} FPS avg | {liveMetrics.Value.OnePercentLowFps:0.#} FPS 1% low";
+                _performanceLabSummaryLabel.ForeColor = liveMetrics.Value.PacingScore >= 82
+                    ? AppTheme.Success
+                    : liveMetrics.Value.PacingScore >= 65
+                        ? AppTheme.AccentSoft
+                        : AppTheme.Warning;
+            }
+            else if (delta.HasResult && baselineMetrics is not null && liveMetrics is not null)
+            {
+                var avgSign = (delta.DeltaPercent ?? 0) >= 0 ? "+" : string.Empty;
+                var lowSign = (delta.DeltaOnePercentLowFps ?? 0) >= 0 ? "+" : string.Empty;
+                _performanceLabSummaryLabel.Text = $"Last measured session: {avgSign}{delta.DeltaPercent:0.#}% avg | {lowSign}{delta.DeltaOnePercentLowFps:0.#} FPS 1% low";
+                _performanceLabSummaryLabel.ForeColor = (delta.DeltaPercent ?? 0) >= 0 || (delta.DeltaOnePercentLowFps ?? 0) > 0
+                    ? AppTheme.Success
+                    : AppTheme.Warning;
+            }
+            else
+            {
+                _performanceLabSummaryLabel.Text = "CloudFrame is calibrating benchmark-grade session metrics.";
+                _performanceLabSummaryLabel.ForeColor = AppTheme.AccentSoft;
+            }
+
+            _performanceLabBaselineLabel.Text = baselineMetrics is null
+                ? "Baseline: waiting for enough profiled-game idle samples."
+                : $"Baseline: {FormatPerformanceMetrics(baselineMetrics.Value)}";
+            _performanceLabLiveLabel.Text = liveMetrics is null
+                ? "Live: waiting for enough boosted-session samples."
+                : $"Live: {FormatPerformanceMetrics(liveMetrics.Value)}";
+            _performanceLabPacingLabel.Text = liveMetrics is not null
+                ? $"Session quality: {DescribePacing(liveMetrics.Value.PacingScore)} | Avg frame time {liveMetrics.Value.AverageFrameTimeMs:0.00} ms | P95 {liveMetrics.Value.P95FrameTimeMs:0.00} ms"
+                : baselineMetrics is not null
+                    ? $"Baseline quality: {DescribePacing(baselineMetrics.Value.PacingScore)} | Avg frame time {baselineMetrics.Value.AverageFrameTimeMs:0.00} ms | P95 {baselineMetrics.Value.P95FrameTimeMs:0.00} ms"
+                    : "Pacing score estimates frametime consistency, not just raw FPS.";
+        }
 
         if (_dashboardSummaryLabel is not null && _dashboardSummaryDetailLabel is not null)
         {
@@ -5433,6 +7521,31 @@ internal sealed class MainForm : Form
         return string.Join(" · ", parts);
     }
 
+    private static string FormatPerformanceMetrics(FramePerformanceMetrics metrics)
+    {
+        return $"{metrics.AverageFps:0.#} FPS avg | {metrics.OnePercentLowFps:0.#} FPS 1% low | pacing {metrics.PacingScore:0}";
+    }
+
+    private static string DescribePacing(double pacingScore)
+    {
+        if (pacingScore >= 88)
+        {
+            return "very smooth pacing";
+        }
+
+        if (pacingScore >= 74)
+        {
+            return "healthy pacing";
+        }
+
+        if (pacingScore >= 58)
+        {
+            return "mixed pacing";
+        }
+
+        return "unstable pacing";
+    }
+
     private static string GetWindowText(IntPtr windowHandle)
     {
         var length = GetWindowTextLength(windowHandle);
@@ -5458,6 +7571,9 @@ internal sealed class MainForm : Form
 
     [DllImport("user32.dll", SetLastError = true)]
     private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
 
     private sealed class FpsTrackingTarget
     {

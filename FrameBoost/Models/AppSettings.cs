@@ -48,6 +48,20 @@ public enum MonitoringMode
     Detailed
 }
 
+public enum FrameGenCaptureMode
+{
+    DesktopDuplication,
+    WindowCapture,
+    SwapChainInterop
+}
+
+public enum FrameGenBackend
+{
+    PrototypeInterpolator,
+    NvidiaOpticalFlow,
+    ExternalCompanion
+}
+
 internal sealed class AppSettings
 {
     // ── Detection / startup ───────────────────────────────────────────────────
@@ -137,6 +151,19 @@ internal sealed class AppSettings
     /// Removes a hidden DX overhead layer. Requires no elevation.
     /// </summary>
     public bool DisableGameDvr { get; set; } = true;
+
+    // Experimental frame generation lab
+    public bool EnableExperimentalFrameGen { get; set; }
+
+    public bool FrameGenRequireBorderless { get; set; } = true;
+
+    public bool FrameGenDisableOnAntiCheat { get; set; } = true;
+
+    public bool FrameGenPreferLowLatency { get; set; } = true;
+
+    public FrameGenCaptureMode FrameGenCaptureMode { get; set; } = FrameGenCaptureMode.DesktopDuplication;
+
+    public FrameGenBackend FrameGenBackend { get; set; } = FrameGenBackend.ExternalCompanion;
 }
 
 internal sealed class GameRecommendationMemory
