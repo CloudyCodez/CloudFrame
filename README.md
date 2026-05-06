@@ -1,3 +1,5 @@
+Join the Server: https://discord.gg/82Mwq8Wj
+
 # CloudFrame
 
 CloudFrame is a Windows desktop booster focused on safe, reversible game-session optimizations.
